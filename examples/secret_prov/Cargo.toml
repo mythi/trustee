@@ -1,0 +1,15 @@
+[package]
+name = "secret_prov"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "secret_prov"
+crate-type = ["cdylib"]
+
+[dependencies]
+base64.workspace = true
+kbs_protocol = { workspace = true, default-features = false, features = ["sgx-attester", "rust-crypto", "background_check"] }
+reqwest = { workspace = true, default-features = false, features = ["cookies", "json", "rustls-tls", "rustls-tls-manual-roots"] }
+tokio.workspace = true
+thiserror.workspace = true
