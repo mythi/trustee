@@ -5,6 +5,7 @@ members = [
     "rvps",
     "tools/kbs-client",
     "deps/verifier",
+    "examples/secret_prov",
 ]
 resolver = "2"
 
