@@ -55,6 +55,20 @@ passport-resource-kbs:
 cli:
 	cargo build -p kbs-client --locked --release --no-default-features --features $(CLI_FEATURES)
 
+.PHONY: secret_prov
+secret_prov:
+	cargo build -p secret_prov --locked --release
+	install -m0755 ../target/release/libsecret_prov.so ../examples/secret_prov/gramine/busybox/
+
+.PHONY: gramine-build
+gramine-build: secret_prov cli-static-linux
+	make -C ../examples/secret_prov/gramine/busybox all
+	make -C ../examples/secret_prov/gramine/busybox all SGX=1
+
+.PHONY: gramine-run
+gramine-run: gramine-build
+	make -C ../examples/secret_prov/gramine/busybox check SGX=1
+
 .PHONY: cli-static-linux
 cli-static-linux:
 	cargo build \
@@ -64,7 +78,8 @@ cli-static-linux:
       --locked \
       --release \
       --no-default-features \
-      --features sample_only
+      --features sample_only,sgx-attester
+	install -m0755 ../target/x86_64-unknown-linux-gnu/release/kbs-client ../examples/secret_prov/gramine/busybox/
 
 install-kbs:
 	install -D -m0755 ../target/release/kbs $(INSTALL_DESTDIR)
