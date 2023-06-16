@@ -1,0 +1,44 @@
+loader.entrypoint = "file:{{ gramine.libos }}"
+libos.entrypoint = "/busybox"
+
+loader.log_level = "{{ log_level }}"
+
+loader.env.LD_LIBRARY_PATH = "/lib:/sp/:/usr/lib/x86_64-linux-gnu"
+loader.env.LD_PRELOAD = "libsecret_prov.so"
+loader.env.SECRET_PROVISION_CONSTRUCTOR = "1"
+loader.env.SECRET_PROVISION_SET_KEY = "gramine/encrypted-files/wrap-key"
+loader.env.SECRET_PROVISION_CA_CHAIN_PATH = "/ca.crt"
+loader.env.SECRET_PROVISION_SERVERS = "https://localhost:8080"
+
+loader.insecure__use_cmdline_argv = true
+fs.mounts = [
+  { path = "/busybox", uri = "file:busybox" },
+  { path = "/sp/libsecret_prov.so", uri = "file:libsecret_prov.so" },
+  { path = "/ca.crt", uri = "file:ca.crt" },
+  { path = "/lib", uri = "file:{{ gramine.runtimedir() }}" },
+  { path = "/usr/lib/x86_64-linux-gnu", uri = "file:/usr/lib/x86_64-linux-gnu" },
+
+  # hardcoded mappings of local hostnames to IP addresses, required by e.g. `hostname` applet
+  { path = "/etc/hosts", uri = "file:helper-files/hosts" },
+]
+
+# required by e.g. `wget` applet
+sys.enable_extra_runtime_domain_names_conf = true
+sys.insecure__allow_eventfd = true
+sgx.max_threads = 4
+
+sgx.debug = true
+sgx.edmm_enable = {{ 'true' if env.get('EDMM', '0') == '1' else 'false' }}
+
+sgx.remote_attestation = "{{ ra_type }}"
+sgx.ra_client_spid = "{{ ra_client_spid }}"
+sgx.ra_client_linkable = {{ 'true' if ra_client_linkable == '1' else 'false' }}
+
+sgx.trusted_files = [
+  "file:busybox",
+  "file:libsecret_prov.so",
+  "file:ca.crt",
+  "file:/usr/lib/x86_64-linux-gnu/libgcc_s.so.1",
+  "file:{{ gramine.runtimedir() }}/",
+  "file:{{ gramine.libos }}",
+]
