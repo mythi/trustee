@@ -41,7 +41,11 @@ pub trait Attest: Send + Sync {
     async fn verify(&self, tee: Tee, nonce: &str, attestation: &str) -> Result<String>;
 
     /// generate the Challenge to pass to attester based on Tee and nonce
-    async fn generate_challenge(&self, _tee: Tee, _tee_parameters: String) -> Result<Challenge> {
+    async fn generate_challenge(
+        &self,
+        _tee: Tee,
+        _tee_parameters: serde_json::Value,
+    ) -> Result<Challenge> {
         let mut nonce: Vec<u8> = vec![0; 32];
 
         thread_rng()
@@ -51,7 +55,7 @@ pub trait Attest: Send + Sync {
         let nonce = STANDARD.encode(&nonce);
         Ok(Challenge {
             nonce,
-            extra_params: String::new(),
+            extra_params: serde_json::Value::String(String::new()),
         })
     }
 }
@@ -112,7 +116,11 @@ impl AttestationService {
         }
     }
 
-    pub async fn generate_challenge(&self, tee: Tee, tee_parameters: String) -> Result<Challenge> {
+    pub async fn generate_challenge(
+        &self,
+        tee: Tee,
+        tee_parameters: serde_json::Value,
+    ) -> Result<Challenge> {
         match self {
             #[cfg(feature = "coco-as-grpc")]
             AttestationService::CoCoASgRPC(inner) => {
