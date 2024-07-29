@@ -503,7 +503,7 @@ source = "git+https://github.com/confidential-containers/guest-components.git?re
 dependencies = [
  "anyhow",
  "async-trait",
- "attester",
+ "attester 0.1.0 (git+https://github.com/confidential-containers/guest-components.git?rev=9bd6f06a9704e01808e91abde130dffb20e632a5)",
  "base64 0.21.7",
  "config",
  "const_format",
@@ -562,7 +562,7 @@ dependencies = [
 [[package]]
 name = "attester"
 version = "0.1.0"
-source = "git+https://github.com/confidential-containers/guest-components.git?rev=9bd6f06a9704e01808e91abde130dffb20e632a5#9bd6f06a9704e01808e91abde130dffb20e632a5"
+source = "git+https://github.com/mythi/guest-components?rev=7e9b1dfe039b31526492e18ba5220565fd10ada4#7e9b1dfe039b31526492e18ba5220565fd10ada4"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -574,7 +574,7 @@ dependencies = [
  "hex",
  "hyper 0.14.28",
  "hyper-tls 0.5.0",
- "kbs-types 0.6.0",
+ "kbs-types 0.7.0",
  "log",
  "nix",
  "occlum_dcap",
@@ -590,6 +590,25 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
+]
+
+[[package]]
+name = "attester"
+version = "0.1.0"
+source = "git+https://github.com/confidential-containers/guest-components.git?rev=9bd6f06a9704e01808e91abde130dffb20e632a5#9bd6f06a9704e01808e91abde130dffb20e632a5"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "base64 0.21.7",
+ "hex",
+ "kbs-types 0.6.0",
+ "log",
+ "serde",
+ "serde_json",
+ "serde_with",
+ "sha2",
+ "strum",
+ "thiserror",
 ]
 
 [[package]]
@@ -1368,13 +1387,13 @@ checksum = "7a81dae078cea95a014a339291cec439d2f232ebe854a9d672b796c6afafa9b7"
 [[package]]
 name = "crypto"
 version = "0.1.0"
-source = "git+https://github.com/confidential-containers/guest-components.git?rev=9bd6f06a9704e01808e91abde130dffb20e632a5#9bd6f06a9704e01808e91abde130dffb20e632a5"
+source = "git+https://github.com/mythi/guest-components?rev=7e9b1dfe039b31526492e18ba5220565fd10ada4#7e9b1dfe039b31526492e18ba5220565fd10ada4"
 dependencies = [
  "aes-gcm",
  "anyhow",
  "base64 0.21.7",
  "ctr",
- "kbs-types 0.6.0",
+ "kbs-types 0.7.0",
  "rand",
  "rsa 0.9.6",
  "serde",
@@ -2803,18 +2822,18 @@ dependencies = [
 [[package]]
 name = "kbs_protocol"
 version = "0.1.0"
-source = "git+https://github.com/confidential-containers/guest-components.git?rev=9bd6f06a9704e01808e91abde130dffb20e632a5#9bd6f06a9704e01808e91abde130dffb20e632a5"
+source = "git+https://github.com/mythi/guest-components?rev=7e9b1dfe039b31526492e18ba5220565fd10ada4#7e9b1dfe039b31526492e18ba5220565fd10ada4"
 dependencies = [
  "anyhow",
  "async-trait",
- "attester",
+ "attester 0.1.0 (git+https://github.com/mythi/guest-components?rev=7e9b1dfe039b31526492e18ba5220565fd10ada4)",
  "base64 0.21.7",
  "crypto",
  "jwt-simple 0.12.9",
- "kbs-types 0.6.0",
+ "kbs-types 0.7.0",
  "log",
  "reqwest 0.12.4",
- "resource_uri",
+ "resource_uri 0.1.0 (git+https://github.com/mythi/guest-components?rev=7e9b1dfe039b31526492e18ba5220565fd10ada4)",
  "serde",
  "serde_json",
  "sha2",
@@ -2842,7 +2861,7 @@ dependencies = [
  "prost 0.11.9",
  "rand",
  "reqwest 0.12.4",
- "resource_uri",
+ "resource_uri 0.1.0 (git+https://github.com/confidential-containers/guest-components.git?rev=9bd6f06a9704e01808e91abde130dffb20e632a5)",
  "ring 0.17.8",
  "serde",
  "serde_json",
@@ -4175,6 +4194,8 @@ checksum = "dd67538700a17451e7cba03ac727fb961abb7607553461627b97de0b89cf4a62"
 dependencies = [
  "base64 0.21.7",
  "bytes",
+ "cookie 0.17.0",
+ "cookie_store",
  "encoding_rs",
  "futures-core",
  "futures-util",
@@ -4258,6 +4279,17 @@ dependencies = [
  "web-sys",
  "webpki-roots 0.26.1",
  "winreg 0.52.0",
+]
+
+[[package]]
+name = "resource_uri"
+version = "0.1.0"
+source = "git+https://github.com/mythi/guest-components?rev=7e9b1dfe039b31526492e18ba5220565fd10ada4#7e9b1dfe039b31526492e18ba5220565fd10ada4"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+ "url",
 ]
 
 [[package]]
@@ -4715,6 +4747,17 @@ dependencies = [
  "pkcs8 0.10.2",
  "subtle",
  "zeroize",
+]
+
+[[package]]
+name = "secret_prov"
+version = "0.1.0"
+dependencies = [
+ "base64 0.21.7",
+ "kbs_protocol",
+ "reqwest 0.11.27",
+ "thiserror",
+ "tokio",
 ]
 
 [[package]]
