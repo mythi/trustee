@@ -1,4 +1,4 @@
-AS_TYPE ?= coco-as
+AS_TYPE ?= intel-trust-authority-as
 HTTPS_CRYPTO ?= rustls
 POLICY_ENGINE ?=
 ALIYUN ?= false
