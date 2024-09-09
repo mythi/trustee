@@ -20,9 +20,3 @@ configMapGenerator:
 - files:
   - policy.rego
   name: policy-config
-
-# KBS auth public key.
-secretGenerator:
-- files:
-  - kbs.pem
-  name: kbs-auth-public-key
