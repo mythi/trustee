@@ -16,7 +16,7 @@ use crate::intel_dcap::{ecdsa_quote_verification, extend_using_custom_claims};
 use crate::{regularize_data, InitDataHash, ReportData};
 
 #[allow(non_camel_case_types)]
-mod types;
+pub mod types;
 
 mod claims;
 pub const QUOTE_SIZE: usize = 436;

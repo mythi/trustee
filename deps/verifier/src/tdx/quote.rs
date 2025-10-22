@@ -1,5 +1,11 @@
-use anyhow::{anyhow, bail, Result};
+use crate::sgx::types::*;
+use anyhow::{anyhow, bail, Context, Result};
 use core::fmt;
+use openssl::bn::BigNum;
+use openssl::nid::Nid;
+use openssl::stack::Stack;
+use openssl::x509::{self, store::X509StoreBuilder, X509StoreContext, X509};
+use openssl::{ec::EcGroup, ec::EcKey, ecdsa::EcdsaSig};
 use scroll::Pread;
 
 pub const QUOTE_HEADER_SIZE: usize = 48;
@@ -42,6 +48,38 @@ impl fmt::Display for QuoteHeader {
             hex::encode(self.user_data)
         )
     }
+}
+
+#[repr(C)]
+#[derive(Debug, Pread)]
+pub struct QuoteSignature {
+    pub sig_r: [u8; 32],
+    pub sig_s: [u8; 32],
+    pub pkey_x_coord: [u8; 32],
+    pub pkey_y_coord: [u8; 32],
+}
+
+#[repr(C)]
+#[derive(Debug, Pread)]
+pub struct QeReport {
+    pub report: sgx_report_body_t,
+    pub sig_r: [u8; 32],
+    pub sig_s: [u8; 32],
+}
+
+#[repr(C)]
+#[derive(Debug)]
+pub struct QeCertificationData {
+    pub qe_report: QeReport,
+    pub qe_authentication: Vec<u8>,
+    pub certificates: Vec<x509::X509>,
+}
+
+#[repr(C)]
+#[derive(Debug)]
+pub struct QuoteSignatureData {
+    pub quote_signature: QuoteSignature,
+    pub qe_certification_data: QeCertificationData,
 }
 
 /// SGX Report2 body
@@ -325,6 +363,49 @@ impl fmt::Display for Quote {
     }
 }
 
+fn parse_certification_data(data: &[u8]) -> Result<QuoteSignatureData> {
+    let offset = &mut 0;
+
+    let quote_signature: QuoteSignature = data.gread::<QuoteSignature>(offset)?;
+
+    let qe_report_cert_data_type: u16 = data.gread::<u16>(offset)?;
+
+    // Expect QE Report Certification Data
+    if qe_report_cert_data_type != 6 {
+        // TODO: return Err
+        println!("ERR type {qe_report_cert_data_type}");
+    }
+
+    // Skip length for now
+    _ = data.gread::<u32>(offset)?;
+
+    let qe_report: QeReport = data.gread::<QeReport>(offset)?;
+
+    let qe_auth_len: usize = data.gread::<u16>(offset)? as usize;
+    let qe_authentication: Vec<u8> = data[*offset..*offset + qe_auth_len].to_vec();
+
+    *offset += qe_auth_len;
+    let pck_cert_chain_type: u16 = data.gread::<u16>(offset)?;
+
+    // Expect PCK Cert Chain type
+    if pck_cert_chain_type != 5 {
+        // TODO: return Err
+        println!("ERR type {pck_cert_chain_type}");
+    }
+
+    let cert_len: usize = data.gread::<u32>(offset)? as usize;
+    let certificates = X509::stack_from_pem(&data[*offset..*offset + cert_len])?;
+
+    Ok(QuoteSignatureData {
+        quote_signature,
+        qe_certification_data: QeCertificationData {
+            qe_report,
+            qe_authentication,
+            certificates,
+        },
+    })
+}
+
 pub fn parse_tdx_quote(quote_bin: &[u8]) -> Result<Quote> {
     let quote_header = &quote_bin[..QUOTE_HEADER_SIZE];
     let header = quote_header
@@ -352,12 +433,15 @@ pub fn parse_tdx_quote(quote_bin: &[u8]) -> Result<Quote> {
             );
             match r#type {
                 QuoteV5Type::TDX10 => {
-                    let offset = QUOTE_HEADER_SIZE
+                    let offset = &mut (QUOTE_HEADER_SIZE
                         + std::mem::size_of::<QuoteV5Type>()
-                        + std::mem::size_of::<[u8; 4]>();
+                        + std::mem::size_of::<[u8; 4]>());
                     let body: ReportBody2 = quote_bin
-                        .pread::<ReportBody2>(offset)
+                        .gread::<ReportBody2>(offset)
                         .map_err(|e| anyhow!("Parse TD quote v5 TDX1.0 body failed: {:?}", e))?;
+                    let _cert_len: u32 = quote_bin
+                        .gread::<u32>(offset)
+                        .context("Parse TD quote Certification data length")?;
                     Ok(Quote::V5 {
                         header,
                         r#type,
@@ -366,12 +450,48 @@ pub fn parse_tdx_quote(quote_bin: &[u8]) -> Result<Quote> {
                     })
                 }
                 QuoteV5Type::TDX15 => {
-                    let offset = QUOTE_HEADER_SIZE
+                    let offset = &mut (QUOTE_HEADER_SIZE
                         + std::mem::size_of::<QuoteV5Type>()
-                        + std::mem::size_of::<[u8; 4]>();
+                        + std::mem::size_of::<[u8; 4]>());
                     let body: ReportBody2v15 = quote_bin
-                        .pread::<ReportBody2v15>(offset)
+                        .gread::<ReportBody2v15>(offset)
                         .map_err(|e| anyhow!("Parse TD quote v5 TDX1.5 body failed: {:?}", e))?;
+                    let cert_len: u32 = quote_bin
+                        .gread::<u32>(offset)
+                        .context("Parse TD quote Certification data length")?;
+                    let qe =
+                        parse_certification_data(&quote_bin[*offset..*offset + cert_len as usize])?;
+                    println!("{:?}", qe.qe_certification_data.certificates[0]);
+                    println!("{:?}", qe.qe_certification_data.certificates[1]);
+                    println!("{:?}", qe.qe_certification_data.certificates[2]);
+
+                    let x = BigNum::from_slice(&qe.quote_signature.pkey_x_coord)?;
+                    let y = BigNum::from_slice(&qe.quote_signature.pkey_y_coord)?;
+                    let group = EcGroup::from_curve_name(Nid::X9_62_PRIME256V1)?;
+                    let pub_key = EcKey::from_public_key_affine_coordinates(&group, &x, &y)?;
+
+                    let r = BigNum::from_slice(&qe.quote_signature.sig_r)?;
+                    let s = BigNum::from_slice(&qe.quote_signature.sig_s)?;
+                    let ecdsa_sig = EcdsaSig::from_private_components(r, s)?;
+
+                    let _ = ecdsa_sig
+                        .verify(
+                            &sha256(
+                                &quote_bin
+                                    [..QUOTE_HEADER_SIZE + 6 + u32::from_le_bytes(size) as usize],
+                            ),
+                            &pub_key,
+                        )
+                        .map_err(|e| anyhow!("Error in ECDSA Signature verification: {}.", e))
+                        .and_then(|result| {
+                            if !result {
+                                Err(anyhow!("Quote ECDSA signature verification failed."))
+                            } else {
+                                println!("OK!");
+                                Ok(())
+                            }
+                        })?;
+
                     Ok(Quote::V5 {
                         header,
                         r#type,

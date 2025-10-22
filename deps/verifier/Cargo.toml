@@ -18,7 +18,7 @@ all-verifier = [
     "nvidia-verifier",
     "tpm-verifier",
 ]
-tdx-verifier = ["eventlog", "scroll", "intel-tee-quote-verification-rs"]
+tdx-verifier = ["eventlog", "scroll", "intel-tee-quote-verification-rs", "openssl"]
 sgx-verifier = ["scroll", "intel-tee-quote-verification-rs"]
 az-snp-vtpm-verifier = ["az-snp-vtpm", "sev", "snp-verifier"]
 az-tdx-vtpm-verifier = ["az-tdx-vtpm", "openssl", "tdx-verifier"]
