@@ -44,6 +44,38 @@ impl fmt::Display for QuoteHeader {
     }
 }
 
+#[repr(C)]
+#[derive(Debug, Pread)]
+pub struct QuoteSignature {
+    pub sig_r: [u8; 32],
+    pub sig_s: [u8; 32],
+    pub pkey_x_coord: [u8; 32],
+    pub pkey_y_coord: [u8; 32],
+}
+
+#[repr(C)]
+#[derive(Debug, Pread)]
+pub struct QeReport {
+    pub report: [u8; 384],
+    pub sig_r: [u8; 32],
+    pub sig_s: [u8; 32],
+}
+
+#[repr(C)]
+#[derive(Debug)]
+pub struct QeCertificationData {
+    pub qe_report: QeReport,
+    pub qe_authentication: Vec<u8>,
+    pub certificates: Vec<u8>,
+}
+
+#[repr(C)]
+#[derive(Debug)]
+pub struct QuoteSignatureData {
+    pub quote_signature: QuoteSignature,
+    pub qe_certification_data: QeCertificationData,
+}
+
 /// SGX Report2 body
 #[repr(C)]
 #[derive(Debug, Pread)]
@@ -325,6 +357,55 @@ impl fmt::Display for Quote {
     }
 }
 
+const QE_REPORT_CERT_DATA_TYPE: u16 = 6;
+const PCK_CERT_CHAIN_CERT_DATA_TYPE: u16 = 5;
+
+/// ECDSA 256-bit Quote Signature Data Structure – Version 4
+pub fn parse_certification_data_v4(data: &[u8]) -> scroll::Result<QuoteSignatureData> {
+    let offset = &mut 0;
+
+    let quote_signature: QuoteSignature = data.gread::<QuoteSignature>(offset)?;
+
+    let qe_report_cert_data_type: u16 = data.gread::<u16>(offset)?;
+
+    // Expect QE Report Certification Data
+    if qe_report_cert_data_type != QE_REPORT_CERT_DATA_TYPE {
+        return Err(scroll::Error::Custom(String::from(
+            "Expected type {QE_REPORT_CERT_DATA_TYPE}, got {qe_report_cert_data_type}.",
+        )));
+    }
+
+    // Skip length for now
+    _ = data.gread::<u32>(offset)?;
+
+    let qe_report: QeReport = data.gread::<QeReport>(offset)?;
+
+    let qe_auth_len: usize = data.gread::<u16>(offset)? as usize;
+    let qe_authentication: Vec<u8> = data[*offset..*offset + qe_auth_len].to_vec();
+
+    *offset += qe_auth_len;
+    let pck_cert_chain_type: u16 = data.gread::<u16>(offset)?;
+
+    // Expect PCK Cert Chain type
+    if pck_cert_chain_type != PCK_CERT_CHAIN_CERT_DATA_TYPE {
+        return Err(scroll::Error::Custom(String::from(
+            "Expected type {PCK_CERT_CHAIN_CERT_DATA_TYPE}, got {pck_cert_chain_type}.",
+        )));
+    }
+
+    let cert_len: usize = data.gread::<u32>(offset)? as usize;
+    let certificates = data[*offset..*offset + cert_len].to_vec();
+
+    Ok(QuoteSignatureData {
+        quote_signature,
+        qe_certification_data: QeCertificationData {
+            qe_report,
+            qe_authentication,
+            certificates,
+        },
+    })
+}
+
 pub fn parse_tdx_quote(quote_bin: &[u8]) -> Result<Quote> {
     let quote_header = &quote_bin[..QUOTE_HEADER_SIZE];
     let header = quote_header
@@ -385,6 +466,26 @@ pub fn parse_tdx_quote(quote_bin: &[u8]) -> Result<Quote> {
     }
 }
 
+pub fn cert_data_start(q: &Quote) -> usize {
+    match q {
+        Quote::V4 { .. } => std::mem::size_of::<QuoteHeader>() + std::mem::size_of::<ReportBody2>(),
+        Quote::V5 { r#type, .. } => match r#type {
+            QuoteV5Type::TDX10 => {
+                std::mem::size_of::<QuoteHeader>()
+                    + std::mem::size_of::<QuoteV5Type>()
+                    + std::mem::size_of::<[u8; 4]>()
+                    + std::mem::size_of::<ReportBody2>()
+            }
+            QuoteV5Type::TDX15 => {
+                std::mem::size_of::<QuoteHeader>()
+                    + std::mem::size_of::<QuoteV5Type>()
+                    + std::mem::size_of::<[u8; 4]>()
+                    + std::mem::size_of::<ReportBody2v15>()
+            }
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use rstest::rstest;
@@ -401,9 +502,9 @@ mod tests {
         let quote = parse_tdx_quote(&quote_bin);
 
         assert!(quote.is_ok());
-        let parsed_quote = format!("{}", quote.unwrap());
+        let quote = quote.unwrap();
 
-        let _ = fs::write(format!("{quote_path}.txt"), parsed_quote);
+        let _ = fs::write(format!("{quote_path}.txt"), format!("{}", quote));
     }
 
     /// Test to verify the TDX quote, both in v4 and v5 format.
