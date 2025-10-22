@@ -1,5 +1,6 @@
-use anyhow::{anyhow, bail, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use core::fmt;
+use openssl::x509::{self, X509};
 use scroll::Pread;
 
 pub const QUOTE_HEADER_SIZE: usize = 48;
@@ -42,6 +43,35 @@ impl fmt::Display for QuoteHeader {
             hex::encode(self.user_data)
         )
     }
+}
+
+#[repr(C)]
+#[derive(Debug, Pread)]
+pub struct QuoteSignature {
+    pub signature: [u8; 64],
+    pub pub_key: [u8; 64],
+}
+
+#[repr(C)]
+#[derive(Debug, Pread)]
+pub struct QeReport {
+    pub report: [u8; 384],
+    pub signature: [u8; 64],
+}
+
+#[repr(C)]
+#[derive(Debug)]
+pub struct QeCertificationData {
+    pub qe_report: QeReport,
+    pub qe_authentication: Vec<u8>,
+    pub certificates: Vec<x509::X509>,
+}
+
+#[repr(C)]
+#[derive(Debug)]
+pub struct QuoteSignatureData {
+    pub quote_signature: QuoteSignature,
+    pub qe_certification_data: QeCertificationData,
 }
 
 /// SGX Report2 body
@@ -325,6 +355,49 @@ impl fmt::Display for Quote {
     }
 }
 
+fn parse_certification_data(data: &[u8]) -> Result<QuoteSignatureData> {
+    let offset = &mut 0;
+
+    let quote_signature: QuoteSignature = data.gread::<QuoteSignature>(offset)?;
+
+    let qe_report_cert_data_type: u16 = data.gread::<u16>(offset)?;
+
+    // Expect QE Report Certification Data
+    if qe_report_cert_data_type != 6 {
+        // TODO: return Err
+        println!("ERR type {qe_report_cert_data_type}");
+    }
+
+    // Skip length for now
+    _ = data.gread::<u32>(offset)?;
+
+    let qe_report: QeReport = data.gread::<QeReport>(offset)?;
+
+    let qe_auth_len: usize = data.gread::<u16>(offset)? as usize;
+    let qe_authentication: Vec<u8> = data[*offset..*offset + qe_auth_len].to_vec();
+
+    *offset += qe_auth_len;
+    let pck_cert_chain_type: u16 = data.gread::<u16>(offset)?;
+
+    // Expect PCK Cert Chain type
+    if pck_cert_chain_type != 5 {
+        // TODO: return Err
+        println!("ERR type {pck_cert_chain_type}");
+    }
+
+    let cert_len: usize = data.gread::<u32>(offset)? as usize;
+    let certificates = X509::stack_from_pem(&data[*offset..*offset + cert_len])?;
+
+    Ok(QuoteSignatureData {
+        quote_signature,
+        qe_certification_data: QeCertificationData {
+            qe_report,
+            qe_authentication,
+            certificates,
+        },
+    })
+}
+
 pub fn parse_tdx_quote(quote_bin: &[u8]) -> Result<Quote> {
     let quote_header = &quote_bin[..QUOTE_HEADER_SIZE];
     let header = quote_header
@@ -352,12 +425,17 @@ pub fn parse_tdx_quote(quote_bin: &[u8]) -> Result<Quote> {
             );
             match r#type {
                 QuoteV5Type::TDX10 => {
-                    let offset = QUOTE_HEADER_SIZE
+                    let offset = &mut (QUOTE_HEADER_SIZE
                         + std::mem::size_of::<QuoteV5Type>()
-                        + std::mem::size_of::<[u8; 4]>();
+                        + std::mem::size_of::<[u8; 4]>());
                     let body: ReportBody2 = quote_bin
-                        .pread::<ReportBody2>(offset)
+                        .gread::<ReportBody2>(offset)
                         .map_err(|e| anyhow!("Parse TD quote v5 TDX1.0 body failed: {:?}", e))?;
+                    let cert_len: u32 = quote_bin
+                        .gread::<u32>(offset)
+                        .context("Parse TD quote Certification data length")?;
+                    let qe =
+                        parse_certification_data(&quote_bin[*offset..*offset + cert_len as usize])?;
                     Ok(Quote::V5 {
                         header,
                         r#type,
@@ -366,12 +444,20 @@ pub fn parse_tdx_quote(quote_bin: &[u8]) -> Result<Quote> {
                     })
                 }
                 QuoteV5Type::TDX15 => {
-                    let offset = QUOTE_HEADER_SIZE
+                    let offset = &mut (QUOTE_HEADER_SIZE
                         + std::mem::size_of::<QuoteV5Type>()
-                        + std::mem::size_of::<[u8; 4]>();
+                        + std::mem::size_of::<[u8; 4]>());
                     let body: ReportBody2v15 = quote_bin
-                        .pread::<ReportBody2v15>(offset)
+                        .gread::<ReportBody2v15>(offset)
                         .map_err(|e| anyhow!("Parse TD quote v5 TDX1.5 body failed: {:?}", e))?;
+                    let cert_len: u32 = quote_bin
+                        .gread::<u32>(offset)
+                        .context("Parse TD quote Certification data length")?;
+                    let qe =
+                        parse_certification_data(&quote_bin[*offset..*offset + cert_len as usize])?;
+                    println!("{:?}", qe.qe_certification_data.certificates[0]);
+                    println!("{:?}", qe.qe_certification_data.certificates[1]);
+                    println!("{:?}", qe.qe_certification_data.certificates[2]);
                     Ok(Quote::V5 {
                         header,
                         r#type,
