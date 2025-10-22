@@ -46,33 +46,33 @@ impl fmt::Display for QuoteHeader {
 
 #[repr(C)]
 #[derive(Debug, Pread)]
-struct QuoteSignature {
-    sig_r: [u8; 32],
-    sig_s: [u8; 32],
-    pkey_x_coord: [u8; 32],
-    pkey_y_coord: [u8; 32],
+pub(crate) struct QuoteSignature {
+    pub(crate) sig_r: [u8; 32],
+    pub(crate) sig_s: [u8; 32],
+    pub(crate) pkey_x_coord: [u8; 32],
+    pub(crate) pkey_y_coord: [u8; 32],
 }
 
 #[repr(C)]
 #[derive(Debug, Pread)]
-struct QeReport {
-    report: [u8; 384],
-    sig_r: [u8; 32],
-    sig_s: [u8; 32],
+pub(crate) struct QeReport {
+    pub(crate) report: [u8; 384],
+    pub(crate) sig_r: [u8; 32],
+    pub(crate) sig_s: [u8; 32],
 }
 
 #[repr(C)]
 #[derive(Debug)]
 pub(crate) struct QeCertificationData {
-    qe_report: QeReport,
-    qe_authentication: Vec<u8>,
+    pub(crate) qe_report: QeReport,
+    pub(crate) qe_authentication: Vec<u8>,
     pub(crate) certificates: Vec<u8>,
 }
 
 #[repr(C)]
 #[derive(Debug)]
 pub(crate) struct QuoteCertificationData {
-    quote_signature: QuoteSignature,
+    pub(crate) quote_signature: QuoteSignature,
     pub(crate) qe_certification_data: QeCertificationData,
 }
 
@@ -363,7 +363,7 @@ const PCK_CERT_CHAIN_CERT_DATA_TYPE: u16 = 5;
 /// Quote Certification Data includes
 /// - ECDSA 256-bit Quote Signature Data Structure – Version 4
 /// - Quoting Enclave Report Certification Data
-fn parse_certification_data_v4(data: &[u8]) -> Result<QuoteCertificationData> {
+pub(crate) fn parse_certification_data_v4(data: &[u8]) -> Result<QuoteCertificationData> {
     let mut offset = 0;
 
     let quote_signature: QuoteSignature = data.gread::<QuoteSignature>(&mut offset)?;
