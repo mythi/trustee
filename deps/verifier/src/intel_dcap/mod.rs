@@ -17,6 +17,8 @@ use std::time::{Duration, SystemTime};
 use tracing::{debug, warn};
 
 mod claims;
+pub(crate) mod collateral_service;
+pub(crate) mod pcs;
 mod error;
 #[cfg(any(feature = "tdx-verifier", feature = "sgx-verifier"))]
 pub(crate) mod pck;
