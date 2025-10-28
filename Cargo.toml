@@ -35,7 +35,7 @@ config = "0.15.19"
 educe = "0.6"
 ear = { git = "https://github.com/veraison/rust-ear.git", rev = "3d5fa46" }
 env_logger = "0.11.8"
-hex = "0.4.3"
+hex = { version = "0.4.3", features = ["serde"] }
 jwt-simple = { version = "0.12", default-features = false, features = [
     "pure-rust",
 ] }
