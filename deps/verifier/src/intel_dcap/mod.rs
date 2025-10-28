@@ -13,6 +13,7 @@ use std::time::{Duration, SystemTime};
 use tracing::{debug, warn};
 
 mod claims;
+pub(crate) mod collateral_service;
 mod error;
 
 pub async fn ecdsa_quote_verification(quote: &[u8]) -> anyhow::Result<Map<String, Value>> {
