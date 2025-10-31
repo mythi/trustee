@@ -1,7 +1,10 @@
 use anyhow::{anyhow, bail, Context, Result};
+use asn1_rs::{oid, DerSequence, Enumerated, FromDer, Oid};
 use core::fmt;
-use openssl::x509::{self, X509};
+use openssl::stack::Stack;
+use openssl::x509::{self, store::X509StoreBuilder, X509StoreContext, X509};
 use scroll::Pread;
+use x509_parser::prelude::X509Certificate;
 
 pub const QUOTE_HEADER_SIZE: usize = 48;
 
@@ -398,7 +401,86 @@ fn parse_certification_data(data: &[u8]) -> Result<QuoteSignatureData> {
     })
 }
 
+const DCAP_SGX_EXTENSIONS: Oid<'static> = oid!(1.2.840 .113741 .1 .13 .1);
+
+#[derive(Debug, PartialEq, DerSequence)]
+pub struct OidAndString<'ext> {
+    id: Oid<'ext>,
+    s: &'ext [u8],
+}
+
+#[derive(Debug, PartialEq, DerSequence)]
+pub struct OidAndInt<'ext> {
+    id: Oid<'ext>,
+    val: u8,
+}
+
+#[derive(Debug, PartialEq, DerSequence)]
+pub struct OidAndEnum<'ext> {
+    id: Oid<'ext>,
+    e: Enumerated,
+}
+
+#[derive(Debug, PartialEq, DerSequence)]
+pub struct OidAndBool<'ext> {
+    id: Oid<'ext>,
+    b: bool,
+}
+
+#[derive(Debug, PartialEq, DerSequence)]
+pub struct PlatformConfig<'ext> {
+    dynamic_platform: OidAndBool<'ext>,
+    cached_keys: OidAndBool<'ext>,
+    smt_enabled: OidAndBool<'ext>,
+}
+
+#[derive(Debug, PartialEq, DerSequence)]
+pub struct ConfigSequence<'ext> {
+    id: Oid<'ext>,
+    configs: PlatformConfig<'ext>,
+}
+
+#[derive(Debug, PartialEq, DerSequence)]
+pub struct Tcbs<'ext> {
+    comp1: OidAndInt<'ext>,
+    comp2: OidAndInt<'ext>,
+    comp3: OidAndInt<'ext>,
+    comp4: OidAndInt<'ext>,
+    comp5: OidAndInt<'ext>,
+    comp6: OidAndInt<'ext>,
+    comp7: OidAndInt<'ext>,
+    comp8: OidAndInt<'ext>,
+    comp9: OidAndInt<'ext>,
+    comp10: OidAndInt<'ext>,
+    comp11: OidAndInt<'ext>,
+    comp12: OidAndInt<'ext>,
+    comp13: OidAndInt<'ext>,
+    comp14: OidAndInt<'ext>,
+    comp15: OidAndInt<'ext>,
+    comp16: OidAndInt<'ext>,
+    pcesvn: OidAndInt<'ext>,
+    cpusvn: OidAndString<'ext>,
+}
+#[derive(Debug, PartialEq, DerSequence)]
+pub struct TcbSequence<'ext> {
+    id: Oid<'ext>,
+    tcbs: Tcbs<'ext>,
+}
+#[derive(Debug, PartialEq, DerSequence)]
+pub struct SgxExtension<'ext> {
+    ppid: OidAndString<'ext>,
+    tcb: TcbSequence<'ext>,
+    pceid: OidAndString<'ext>,
+    fmspc: OidAndString<'ext>,
+    sgxtype: OidAndEnum<'ext>,
+    platform_instance: OidAndString<'ext>,
+    configuration: ConfigSequence<'ext>,
+}
+
 pub fn parse_tdx_quote(quote_bin: &[u8]) -> Result<Quote> {
+    let trust_anchor = X509::from_pem(include_bytes!(
+        "Intel_SGX_Provisioning_Certification_RootCA.pem"
+    ))?;
     let quote_header = &quote_bin[..QUOTE_HEADER_SIZE];
     let header = quote_header
         .pread::<QuoteHeader>(0)
@@ -434,7 +516,7 @@ pub fn parse_tdx_quote(quote_bin: &[u8]) -> Result<Quote> {
                     let cert_len: u32 = quote_bin
                         .gread::<u32>(offset)
                         .context("Parse TD quote Certification data length")?;
-                    let qe =
+                    let _qe =
                         parse_certification_data(&quote_bin[*offset..*offset + cert_len as usize])?;
                     Ok(Quote::V5 {
                         header,
@@ -455,9 +537,61 @@ pub fn parse_tdx_quote(quote_bin: &[u8]) -> Result<Quote> {
                         .context("Parse TD quote Certification data length")?;
                     let qe =
                         parse_certification_data(&quote_bin[*offset..*offset + cert_len as usize])?;
-                    println!("{:?}", qe.qe_certification_data.certificates[0]);
-                    println!("{:?}", qe.qe_certification_data.certificates[1]);
-                    println!("{:?}", qe.qe_certification_data.certificates[2]);
+                    //println!("{:?}", qe.qe_certification_data.certificates[0]);
+                    //println!("{:?}", qe.qe_certification_data.certificates[1]);
+                    //println!("{:?}", qe.qe_certification_data.certificates[2]);
+                    println!(
+                        "{:?}",
+                        qe.qe_certification_data.certificates[2]
+                            .issued(&qe.qe_certification_data.certificates[2])
+                    );
+                    println!(
+                        "{:?}",
+                        qe.qe_certification_data.certificates[2]
+                            .issued(&qe.qe_certification_data.certificates[1])
+                    );
+                    println!(
+                        "{:?}",
+                        qe.qe_certification_data.certificates[1]
+                            .issued(&qe.qe_certification_data.certificates[0])
+                    );
+
+                    let pck_der = qe.qe_certification_data.certificates[0].to_der()?;
+                    let parsed_pck = X509Certificate::from_der(&pck_der)?.1.tbs_certificate;
+                    //println!("EXT {:?}", parsed_pck);
+
+                    let value = parsed_pck
+                        .get_extension_unique(&DCAP_SGX_EXTENSIONS)?
+                        .ok_or_else(|| anyhow!("FMSPC not found"))?
+                        .value;
+                    //println!("EXT {:?}", hex::encode(value));
+
+                    let (_, parsed) = SgxExtension::from_der(value).expect("Failed to parse");
+                    println!("Parsed: {:?}", parsed);
+                    println!("Parsed: {:?}", hex::encode(parsed.fmspc.s));
+
+                    let trusted_certs = {
+                        let mut builder = X509StoreBuilder::new()?;
+                        builder.add_cert(trust_anchor)?;
+                        builder.build()
+                    };
+
+                    let mut intermediate_certs = Stack::<X509>::new()?;
+                    intermediate_certs.push(qe.qe_certification_data.certificates[1].clone())?;
+                    let mut context = X509StoreContext::new()?;
+                    let verified = context
+                        .init(
+                            &trusted_certs,
+                            &qe.qe_certification_data.certificates[0],
+                            &intermediate_certs,
+                            |c| c.verify_cert(),
+                        )
+                        .map_err(|e| anyhow!(e.to_string()))?;
+
+                    if !verified {
+                        bail!("Report certificate chain failed to verify");
+                    }
+
                     Ok(Quote::V5 {
                         header,
                         r#type,
