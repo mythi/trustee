@@ -4,7 +4,7 @@ use asn1_rs::{oid, DerSequence, Enumerated, FromDer, Oid};
 use core::fmt;
 use openssl::bn::BigNum;
 use openssl::nid::Nid;
-use openssl::sha::sha256;
+use openssl::sha::{sha256, Sha256};
 use openssl::stack::Stack;
 use openssl::x509::{
     self, store::X509Store, store::X509StoreBuilder, X509StoreContext, X509VerifyResult, X509,
@@ -86,6 +86,7 @@ pub struct QeReport {
 #[repr(C)]
 #[derive(Debug)]
 pub struct QeCertificationData {
+    pub qe_report_hash: [u8; 32],
     pub qe_report: QeReport,
     pub qe_authentication: Vec<u8>,
     pub certificates: Vec<x509::X509>,
@@ -395,10 +396,29 @@ fn parse_certification_data(data: &[u8]) -> Result<QuoteSignatureData> {
     // Skip length for now
     _ = data.gread::<u32>(offset)?;
 
+    let qe_report_hash = sha256(&data[*offset..*offset + std::mem::size_of::<sgx_report_body_t>()]);
+
     let qe_report: QeReport = data.gread::<QeReport>(offset)?;
 
     let qe_auth_len: usize = data.gread::<u16>(offset)? as usize;
     let qe_authentication: Vec<u8> = data[*offset..*offset + qe_auth_len].to_vec();
+
+    // Test that the AK pubkey and QE authentication data are bound to
+    // Quoting Enclave's Report Data:
+    // sha256(Attestation Key || QE Authentication Data) || 32-0x00’s
+    let mut report_data = [0u8; 64];
+    let mut hasher = Sha256::new();
+
+    hasher.update(&quote_signature.pkey_x_coord);
+    hasher.update(&quote_signature.pkey_y_coord);
+    hasher.update(&qe_authentication.as_slice());
+    let hash = hasher.finish();
+
+    report_data[..32].copy_from_slice(&hash);
+
+    if report_data != qe_report.report.report_data {
+        println!("QE Report ReportData mismatch!");
+    }
 
     *offset += qe_auth_len;
     let pck_cert_chain_type: u16 = data.gread::<u16>(offset)?;
@@ -415,6 +435,7 @@ fn parse_certification_data(data: &[u8]) -> Result<QuoteSignatureData> {
     Ok(QuoteSignatureData {
         quote_signature,
         qe_certification_data: QeCertificationData {
+            qe_report_hash,
             qe_report,
             qe_authentication,
             certificates,
@@ -583,6 +604,16 @@ pub fn parse_tdx_quote(quote_bin: &[u8]) -> Result<Quote> {
                                 Ok(())
                             }
                         })?;
+
+                    let public_key = qe.qe_certification_data.certificates[0].public_key()?;
+                    let ec_key = EcKey::try_from(public_key)?;
+
+                    let r = BigNum::from_slice(&qe.qe_certification_data.qe_report.sig_r)?;
+                    let s = BigNum::from_slice(&qe.qe_certification_data.qe_report.sig_s)?;
+                    let ecdsa_sig = EcdsaSig::from_private_components(r, s)?;
+                    let res = ecdsa_sig
+                        .verify(&qe.qe_certification_data.qe_report_hash, &ec_key)?;
+                    println!("{res}");
 
                     if qe.qe_certification_data.certificates[2]
                         .issued(&qe.qe_certification_data.certificates[2])
