@@ -1,3 +1,5 @@
+use crate::intel_dcap::collateral_service::*;
+use crate::tdx::verify::dcap_verify;
 use anyhow::{anyhow, bail, Result};
 use core::fmt;
 use scroll::Pread;
@@ -495,9 +497,11 @@ mod tests {
     use std::fs;
 
     #[rstest]
+    #[tokio::test]
     #[case("./test_data/tdx_quote_4.dat")]
+    #[tokio::test]
     #[case("./test_data/tdx_quote_5.dat")]
-    fn test_parse_tdx_quote(#[case] quote_path: &str) {
+    async fn test_parse_tdx_quote(#[case] quote_path: &str) {
         let quote_bin = fs::read(quote_path).unwrap();
         let quote = parse_tdx_quote(&quote_bin);
 
@@ -515,7 +519,19 @@ mod tests {
             "End pos must match quote buffer length"
         );
 
-        let _qe = parse_certification_data_v4(&quote_bin[start..]).expect("MUST succeed");
+        let qe = parse_certification_data_v4(&quote_bin[start..]).expect("MUST succeed");
+
+        let client = reqwest::Client::new();
+        let url = reqwest::Url::parse("https://api.trustedservices.intel.com/").expect("parse");
+        let api_version = 4;
+        let pcs = IntelPcs {
+            client,
+            url,
+            api_version,
+        };
+
+        let res = dcap_verify(&quote_bin[..start - 4], &qe, &pcs).await;
+        println!("{res:?}");
 
         let _ = fs::write(format!("{quote_path}.txt"), format!("{}", quote));
     }
