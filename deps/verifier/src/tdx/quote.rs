@@ -1,3 +1,5 @@
+use super::verify::dcap_verify;
+use crate::intel_dcap::collateral_service::*;
 use anyhow::{anyhow, bail, Result};
 use core::fmt;
 use scroll::Pread;
@@ -330,6 +332,7 @@ macro_rules! body_field {
 }
 
 impl Quote {
+    body_field!(tcb_svn);
     body_field!(report_data);
     body_field!(mr_config_id);
     body_field!(rtmr_0);
@@ -492,17 +495,52 @@ mod tests {
 
     use super::*;
     use crate::intel_dcap::ecdsa_quote_verification;
+    use http_cache_reqwest::{
+        Cache, CacheMode, HttpCache, HttpCacheOptions, MokaCacheBuilder, MokaManager,
+    };
+    use reqwest_middleware::ClientBuilder;
     use std::fs;
+    use std::sync::OnceLock;
 
+    static PCS_CACHE_MANAGER: OnceLock<MokaManager> = OnceLock::new();
+    fn init_cache_manager() -> MokaManager {
+        MokaManager::new(MokaCacheBuilder::new(1024).build())
+    }
     #[rstest]
+    #[tokio::test]
     #[case("./test_data/tdx_quote_4.dat")]
+    #[tokio::test]
     #[case("./test_data/tdx_quote_5.dat")]
-    fn test_parse_tdx_quote(#[case] quote_path: &str) {
+    async fn test_parse_tdx_quote(#[case] quote_path: &str) {
         let quote_bin = fs::read(quote_path).unwrap();
         let quote = parse_tdx_quote(&quote_bin);
 
         assert!(quote.is_ok());
         let quote = quote.unwrap();
+
+        let manager = PCS_CACHE_MANAGER.get_or_init(init_cache_manager).clone();
+        let client = ClientBuilder::new(reqwest::Client::new())
+            .with(Cache(HttpCache {
+                mode: CacheMode::Default,
+                manager,
+                options: HttpCacheOptions {
+                    cache_status_headers: true,
+                    ..Default::default()
+                },
+            }))
+            .build();
+
+        let url = reqwest::Url::parse("https://api.trustedservices.intel.com/").expect("parse");
+        let api_version = 4;
+        let pcs = IntelPcs {
+            client,
+            url,
+            api_version,
+        };
+
+        let utc_now = chrono::Utc::now();
+        let res = dcap_verify(&quote_bin, &utc_now, &pcs).await;
+        println!("{res:?}");
 
         let _ = fs::write(format!("{quote_path}.txt"), format!("{}", quote));
     }

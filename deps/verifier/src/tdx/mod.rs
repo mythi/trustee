@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 
 pub(crate) mod claims;
 pub(crate) mod quote;
+pub(crate) mod verify;
 
 #[derive(Serialize, Deserialize, Debug)]
 struct TdxEvidence {
