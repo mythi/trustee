@@ -1,5 +1,9 @@
+use crate::intel_dcap::collateral_service::*;
+use crate::tdx::verify::dcap_verify;
 use anyhow::{anyhow, bail, Result};
 use core::fmt;
+use http_cache_reqwest::{CACacheManager, Cache, CacheMode, HttpCache, HttpCacheOptions};
+use reqwest_middleware::ClientBuilder;
 use scroll::Pread;
 
 pub const QUOTE_HEADER_SIZE: usize = 48;
@@ -495,9 +499,11 @@ mod tests {
     use std::fs;
 
     #[rstest]
+    #[tokio::test]
     #[case("./test_data/tdx_quote_4.dat")]
+    #[tokio::test]
     #[case("./test_data/tdx_quote_5.dat")]
-    fn test_parse_tdx_quote(#[case] quote_path: &str) {
+    async fn test_parse_tdx_quote(#[case] quote_path: &str) {
         let quote_bin = fs::read(quote_path).unwrap();
         let quote = parse_tdx_quote(&quote_bin);
 
@@ -515,7 +521,29 @@ mod tests {
             "End pos must match quote buffer length"
         );
 
-        let _qe = parse_certification_data_v4(&quote_bin[start..]).expect("MUST succeed");
+        let qe = parse_certification_data_v4(&quote_bin[start..]).expect("MUST succeed");
+
+        let client = ClientBuilder::new(reqwest::Client::new())
+            .with(Cache(HttpCache {
+                mode: CacheMode::Default,
+                manager: CACacheManager::new(std::path::PathBuf::from("/tmp/.dcap-qcnl"), true),
+                options: HttpCacheOptions {
+                    cache_status_headers: true,
+                    ..Default::default()
+                },
+            }))
+            .build();
+
+        let url = reqwest::Url::parse("https://api.trustedservices.intel.com/").expect("parse");
+        let api_version = 4;
+        let pcs = IntelPcs {
+            client,
+            url,
+            api_version,
+        };
+
+        let res = dcap_verify(&quote_bin[..start - 4], &qe, &pcs).await;
+        println!("{res:?}");
 
         let _ = fs::write(format!("{quote_path}.txt"), format!("{}", quote));
     }
