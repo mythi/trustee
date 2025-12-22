@@ -511,6 +511,8 @@ mod tests {
     #[case("./test_data/tdx_quote_4.dat")]
     #[tokio::test]
     #[case("./test_data/tdx_quote_5.dat")]
+    #[tokio::test]
+    #[case("./test_data/tdx_quote_6.dat")]
     async fn test_parse_tdx_quote(#[case] quote_path: &str) {
         let quote_bin = fs::read(quote_path).unwrap();
         let quote = parse_tdx_quote(&quote_bin);
