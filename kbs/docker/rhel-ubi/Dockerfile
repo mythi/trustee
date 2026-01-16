@@ -39,7 +39,7 @@ popd
 # Build KBS.
 RUN ARCH=$(uname -m) && \
 export OPENSSL_NO_VENDOR=1; \
-pushd kbs && make AS_FEATURE=coco-as-builtin ALIYUN=${ALIYUN} ARCH=${ARCH} && make ARCH=${ARCH} install-kbs && popd
+pushd kbs && make AS_FEATURE=${KBS_FEATURES} ALIYUN=${ALIYUN} ARCH=${ARCH} && make ARCH=${ARCH} install-kbs && popd
 
 
 # Check the sha256sum of the Intel provided RPMs on x86_64.
