@@ -20,7 +20,8 @@ type = "BuiltIn"
 policy_path = "/opa/confidential-containers/kbs/policy.rego"
 
 [admin]
-insecure_api = true
+# Do not use this in production.
+type = "InsecureAllowAll"
 
 [[plugins]]
 name = "resource"

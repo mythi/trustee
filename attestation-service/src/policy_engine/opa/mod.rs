@@ -2,16 +2,26 @@
 // Licensed under the Apache License, Version 2.0, see LICENSE for details.
 // SPDX-License-Identifier: Apache-2.0
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 use base64::Engine;
-use log::{debug, warn};
+use serde_json::{json, Value};
 use sha2::{Digest, Sha384};
-use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::mpsc;
+use std::time::Duration;
+use std::{collections::HashMap, thread};
+use tracing::{debug, info, instrument, warn};
 
-use super::{EvaluationResult, PolicyDigest, PolicyEngine, PolicyError};
+use crate::rvps::RvpsClient;
+
+use super::{EvaluationResult, Extension, PolicyDigest, PolicyEngine, PolicyError};
+
+/// The policy claim that will hold trust claims.
+pub const TRUST_CLAIMS_RULE: &str = "data.policy.trust_claims";
+/// The policy claim that will hold extensions.
+pub const EXTENSIONS_RULE: &str = "data.policy.extensions";
 
 #[derive(Debug, Clone)]
 pub struct OPA {
@@ -39,12 +49,13 @@ impl OPA {
 
 #[async_trait]
 impl PolicyEngine for OPA {
+    #[instrument(skip_all, name = "OPA", fields(policy_id = %policy_id))]
     async fn evaluate(
         &self,
-        data: &str,
+        data: Option<&str>,
         input: &str,
         policy_id: &str,
-        evaluation_rules: Vec<String>,
+        rvps_client: Option<RvpsClient>,
     ) -> Result<EvaluationResult, PolicyError> {
         let policy_dir_path = self
             .policy_dir_path
@@ -72,12 +83,14 @@ impl PolicyEngine for OPA {
             .add_policy(policy_id.to_string(), policy)
             .map_err(PolicyError::LoadPolicyFailed)?;
 
-        let data =
-            regorus::Value::from_json_str(data).map_err(PolicyError::JsonSerializationFailed)?;
+        if let Some(data) = data {
+            let data = regorus::Value::from_json_str(data)
+                .map_err(PolicyError::JsonSerializationFailed)?;
 
-        engine
-            .add_data(data)
-            .map_err(PolicyError::LoadReferenceDataFailed)?;
+            engine
+                .add_data(data)
+                .map_err(PolicyError::LoadReferenceDataFailed)?;
+        }
 
         // Add TCB claims as input
         engine
@@ -85,19 +98,100 @@ impl PolicyEngine for OPA {
             .context("set input")
             .map_err(PolicyError::SetInputDataFailed)?;
 
-        let mut rules_result = HashMap::new();
-        for rule in evaluation_rules {
-            let whole_rule = format!("data.policy.{rule}");
-            let Ok(claim_value) = engine.eval_rule(whole_rule) else {
-                debug!("Policy `{policy_id}` does not check {rule}");
-                continue;
-            };
+        if let Some(rvps_client) = rvps_client {
+            engine
+                .add_extension(
+                    "query_reference_value".to_string(),
+                    1,
+                    Box::new(move |params: Vec<regorus::Value>| {
+                        if params.len() != 1 {
+                            bail!("query_reference_value extension requires exactly one parameter");
+                        }
+                        let id = params[0]
+                            .as_string()
+                            .context("query_reference_value extension parameter must be a string")?
+                            .to_string();
+                        debug!("query reference value from RVPS: {id}");
+                        let (tx, rx) = mpsc::channel::<Result<Option<serde_json::Value>>>();
 
-            rules_result.insert(rule.to_string(), claim_value);
+                        let fut = async |rvps_client: RvpsClient,
+                                         reference_value_id: String|
+                               -> Result<_> {
+                            let rv = rvps_client
+                                .lock()
+                                .await
+                                .query_reference_value(&reference_value_id)
+                                .await?;
+                            Ok(rv)
+                        };
+
+                        let rvps_client = rvps_client.clone();
+                        let reference_value_id = params[0].as_string()?.to_string();
+                        let _ = thread::spawn(move || {
+                            let rt = tokio::runtime::Builder::new_current_thread()
+                                .enable_all()
+                                .build()
+                                .expect("failed to build runtime");
+
+                            let res = rt.block_on(fut(rvps_client, reference_value_id));
+
+                            tx.send(res)
+                        });
+
+                        // We wait for 10 seconds at most.
+                        match rx.recv_timeout(Duration::from_secs(10)) {
+                            Ok(Ok(Some(v))) => {
+                                let json_value = serde_json::to_value(v)?;
+                                let value: regorus::Value = serde_json::from_value(json_value)?;
+                                Ok(value)
+                            }
+                            Ok(Ok(None)) => {
+                                warn!("No reference value found for the given id: {id}, use NULL as the returned value");
+                                Ok(regorus::Value::Null)
+                            }
+                            Ok(Err(e)) => bail!("Get Reference Value from RVPS failed: {e:?}"),
+                            Err(e) => bail!("Get Reference Value from RVPS timeout: {e:?}"),
+                        }
+                    }),
+                )
+                .expect("Only duplicated extension insertion can cause panic");
         }
 
+        let claim_value = engine
+            .eval_rule(TRUST_CLAIMS_RULE.to_string())
+            .map_err(|e| PolicyError::EvalPolicyFailed {
+                policy_id: policy_id.to_string(),
+                source: e,
+            })?;
+
+        let claim_value = claim_value
+            .to_json_str()
+            .map_err(PolicyError::JsonSerializationFailed)?;
+        let trust_claims = serde_json::from_str::<Value>(&claim_value)?;
+
+        let claim_value = match engine.eval_rule(EXTENSIONS_RULE.to_string()) {
+            Ok(r) => r,
+            // Extensions claim is optional.
+            Err(e) if e.to_string().contains("not a valid rule path") => {
+                info!("No extensions claim found in policy.");
+                json!([]).into()
+            }
+            Err(e) => {
+                return Err(PolicyError::EvalPolicyFailed {
+                    policy_id: policy_id.to_string(),
+                    source: e,
+                })
+            }
+        };
+
+        let claim_value = claim_value
+            .to_json_str()
+            .map_err(PolicyError::JsonSerializationFailed)?;
+        let extensions = serde_json::from_str::<Vec<Extension>>(&claim_value)?;
+
         let res = EvaluationResult {
-            rules_result,
+            trust_claims,
+            extensions,
             policy_hash,
         };
 
@@ -191,7 +285,6 @@ impl PolicyEngine for OPA {
 
 #[cfg(test)]
 mod tests {
-    use ear::TrustVector;
     use rstest::rstest;
     use serde_json::json;
 
@@ -234,45 +327,45 @@ mod tests {
         #[case] svn_b: u64,
         #[case] digest_a: String,
         #[case] digest_b: String,
-        #[case] ex_exp: i8,
-        #[case] hw_exp: i8,
+        #[case] ex_exp: i64,
+        #[case] hw_exp: i64,
     ) {
         let opa = OPA {
-            policy_dir_path: PathBuf::from("./src/token/"),
+            policy_dir_path: PathBuf::from("./tests/policy/"),
         };
-        let default_policy_id = "ear_default_policy_cpu".to_string();
-
-        let ear_rules = TrustVector::new()
-            .into_iter()
-            .map(|c| c.tag().to_string().replace("-", "_"))
-            .collect();
+        let default_policy_id = "ear_sample".to_string();
 
         let output = opa
             .evaluate(
-                &dummy_reference(svn_a, digest_a),
+                Some(&dummy_reference(svn_a, digest_a)),
                 &dummy_input(svn_b, digest_b),
                 &default_policy_id,
-                ear_rules,
+                None,
             )
             .await
             .unwrap();
 
+        println!("{:?}", output.trust_claims);
         assert_eq!(
             hw_exp,
             output
-                .rules_result
+                .trust_claims
+                .as_object()
+                .unwrap()
                 .get("hardware")
                 .unwrap()
-                .as_i8()
+                .as_i64()
                 .unwrap()
         );
         assert_eq!(
             ex_exp,
             output
-                .rules_result
+                .trust_claims
+                .as_object()
+                .unwrap()
                 .get("executables")
                 .unwrap()
-                .as_i8()
+                .as_i64()
                 .unwrap()
         );
     }

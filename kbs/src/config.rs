@@ -2,7 +2,7 @@
 // Licensed under the Apache License, Version 2.0, see LICENSE for details.
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::admin::config::{AdminConfig, DEFAULT_INSECURE_API};
+use crate::admin::AdminConfig;
 use crate::plugins::PluginsConfig;
 use crate::policy_engine::PolicyEngineConfig;
 use crate::token::AttestationTokenVerifierConfig;
@@ -18,6 +18,7 @@ const DEFAULT_SOCKET: &str = "127.0.0.1:8080";
 const DEFAULT_PAYLOAD_REQUEST_SIZE: u32 = 2;
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(default)]
 pub struct HttpServerConfig {
     /// Socket addresses (IP:port) to listen on, e.g. 127.0.0.1:8080.
     pub sockets: Vec<SocketAddr>,
@@ -54,7 +55,7 @@ impl Default for HttpServerConfig {
 }
 
 /// Contains all configurable KBS properties.
-#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Deserialize, PartialEq, Default)]
 pub struct KbsConfig {
     /// Attestation token result broker config.
     #[serde(default)]
@@ -87,19 +88,11 @@ impl TryFrom<&Path> for KbsConfig {
     /// `config` crate. See `KbsConfig` for schema information.
     fn try_from(config_path: &Path) -> Result<Self, Self::Error> {
         let c = Config::builder()
-            .set_default("admin.insecure_api", DEFAULT_INSECURE_API)?
-            .set_default("http_server.insecure_http", DEFAULT_INSECURE_HTTP)?
-            .set_default("http_server.sockets", vec![DEFAULT_SOCKET])?
-            .set_default(
-                "http_server.payload_request_size",
-                DEFAULT_PAYLOAD_REQUEST_SIZE,
-            )?
-            .set_default("attestation_service.policy_ids", Vec::<&str>::new())?
             .add_source(File::with_name(config_path.to_str().unwrap()))
             .build()?;
 
         c.try_deserialize()
-            .map_err(|e| anyhow!("invalid config: {}", e.to_string()))
+            .map_err(|e| anyhow!("invalid config: {}", e))
     }
 }
 
@@ -118,10 +111,12 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use crate::{
-        admin::config::AdminConfig,
+        admin::{
+            simple::{SimpleAdminConfig, SimplePersonaConfig},
+            AdminBackendType, AdminConfig,
+        },
         config::{
-            HttpServerConfig, DEFAULT_INSECURE_API, DEFAULT_INSECURE_HTTP,
-            DEFAULT_PAYLOAD_REQUEST_SIZE, DEFAULT_SOCKET,
+            HttpServerConfig, DEFAULT_INSECURE_HTTP, DEFAULT_PAYLOAD_REQUEST_SIZE, DEFAULT_SOCKET,
         },
         plugins::{
             implementations::{
@@ -137,8 +132,8 @@ mod tests {
 
     #[cfg(feature = "coco-as-builtin")]
     use attestation_service::{
+        ear_token::{EarTokenConfiguration, COCO_AS_ISSUER_NAME, DEFAULT_TOKEN_DURATION},
         rvps::{grpc::RvpsRemoteConfig, RvpsConfig, RvpsCrateConfig},
-        token::{simple, AttestationTokenConfig, COCO_AS_ISSUER_NAME, DEFAULT_TOKEN_DURATION},
     };
 
     use reference_value_provider_service::storage::{local_fs, ReferenceValueStorageConfig};
@@ -173,8 +168,7 @@ mod tests {
             worker_count: None,
         },
         admin: AdminConfig {
-            auth_public_key: Some(PathBuf::from("/etc/kbs-admin.pub")),
-            insecure_api: false,
+            admin_backend: AdminBackendType::DenyAll,
         },
         policy_engine: PolicyEngineConfig {
             policy_path: PathBuf::from("/etc/kbs-policy.rego"),
@@ -204,12 +198,13 @@ mod tests {
                         rvps_config: RvpsConfig::GrpcRemote(RvpsRemoteConfig {
                             address: "http://127.0.0.1:50003".into(),
                         }),
-                        attestation_token_broker: AttestationTokenConfig::Simple(simple::Configuration {
+                        attestation_token_broker: EarTokenConfiguration {
                             duration_min: DEFAULT_TOKEN_DURATION,
                             issuer_name: COCO_AS_ISSUER_NAME.into(),
                             signer: None,
                             ..Default::default()
-                        }),
+                        },
+                        verifier_config: None,
                     }
                 ),
             timeout: crate::attestation::config::DEFAULT_TIMEOUT,
@@ -223,8 +218,7 @@ mod tests {
             worker_count: None,
         },
         admin: AdminConfig {
-            auth_public_key: None,
-            insecure_api: DEFAULT_INSECURE_API,
+            admin_backend: AdminBackendType::DenyAll,
         },
         policy_engine: PolicyEngineConfig {
             policy_path: DEFAULT_POLICY_PATH.into(),
@@ -261,8 +255,7 @@ mod tests {
             worker_count: None,
         },
         admin: AdminConfig {
-            auth_public_key: Some(PathBuf::from("/etc/kbs-admin.pub")),
-            insecure_api: false,
+            admin_backend: AdminBackendType::DenyAll,
         },
         policy_engine: PolicyEngineConfig {
             policy_path: PathBuf::from("/etc/kbs-policy.rego"),
@@ -300,8 +293,12 @@ mod tests {
             worker_count: None,
         },
         admin: AdminConfig {
-            auth_public_key: Some(PathBuf::from("/opt/confidential-containers/kbs/user-keys/public.pub")),
-            insecure_api: DEFAULT_INSECURE_API,
+            admin_backend: AdminBackendType::Simple(SimpleAdminConfig {
+                personas: vec![SimplePersonaConfig {
+                    id: "admin1".to_string(),
+                    public_key_path: "/opt/confidential-containers/trustee/admin1-pubkey.pem".into()
+                }],
+            }),
         },
         policy_engine: PolicyEngineConfig::default(),
         plugins: Vec::new(),
@@ -325,10 +322,11 @@ mod tests {
                             }),
                             extractors: None,
                         }),
-                        attestation_token_broker: AttestationTokenConfig::Simple(simple::Configuration{
+                        attestation_token_broker: EarTokenConfiguration {
                             duration_min: 5,
                             ..Default::default()
-                        }),
+                        },
+                        verifier_config: None,
                     }
                 ),
             timeout: crate::attestation::config::DEFAULT_TIMEOUT,
@@ -342,8 +340,7 @@ mod tests {
             worker_count: None,
         },
         admin: AdminConfig {
-            auth_public_key: Some("/kbs/kbs.pem".into()),
-            insecure_api: DEFAULT_INSECURE_API,
+            admin_backend: AdminBackendType::InsecureAllowAll,
         },
         policy_engine: PolicyEngineConfig::default(),
         plugins: Vec::new(),
@@ -378,8 +375,7 @@ mod tests {
             worker_count: None,
         },
         admin: AdminConfig {
-            auth_public_key: Some("/kbs/kbs.pem".into()),
-            insecure_api: DEFAULT_INSECURE_API,
+            admin_backend: AdminBackendType::DenyAll,
         },
         policy_engine: PolicyEngineConfig::default(),
         plugins: Vec::new(),
@@ -404,8 +400,7 @@ mod tests {
             ..Default::default()
         },
         admin: AdminConfig {
-            insecure_api: true,
-            ..Default::default()
+            admin_backend: AdminBackendType::DenyAll,
         },
         policy_engine: PolicyEngineConfig::default(),
         plugins: Vec::new(),
@@ -436,8 +431,7 @@ mod tests {
             ..Default::default()
         },
         admin: AdminConfig {
-            insecure_api: true,
-            ..Default::default()
+            admin_backend: AdminBackendType::DenyAll,
         },
         policy_engine: PolicyEngineConfig::default(),
         plugins: Vec::new(),
@@ -456,11 +450,12 @@ mod tests {
                     attestation_service::config::Config {
                         work_dir: "/opt/confidential-containers/attestation-service".into(),
                         rvps_config: RvpsConfig::BuiltIn(RvpsCrateConfig::default()),
-                        attestation_token_broker: AttestationTokenConfig::Simple(simple::Configuration {
+                        attestation_token_broker: EarTokenConfiguration {
                             duration_min: 5,
-                            policy_dir: "/opt/confidential-containers/attestation-service/simple-policies".into(),
+                            policy_dir: "/opt/confidential-containers/attestation-service/ear-policies".into(),
                             ..Default::default()
-                        }),
+                        },
+                        verifier_config: None,
                     }
                 ),
             timeout: crate::attestation::config::DEFAULT_TIMEOUT,
@@ -470,8 +465,9 @@ mod tests {
             ..Default::default()
         },
         admin: AdminConfig {
-            insecure_api: true,
-            ..Default::default()
+            admin_backend: AdminBackendType::Simple(SimpleAdminConfig {
+                personas: Vec::new(),
+            }),
         },
         policy_engine: PolicyEngineConfig {
             policy_path: "/opa/confidential-containers/kbs/policy.rego".into(),

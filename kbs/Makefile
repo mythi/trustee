@@ -43,29 +43,29 @@ COCO_AS_INTEGRATION_TYPE ?= builtin
 INSTALL_DESTDIR ?= /usr/local/bin
 
 ifeq ($(AS_TYPE), coco-as)
-  AS_FEATURE += $(AS_TYPE)-$(COCO_AS_INTEGRATION_TYPE),
+  AS_FEATURE := $(AS_TYPE)-$(COCO_AS_INTEGRATION_TYPE)
 else ifneq ($(AS_TYPE), )
-  AS_FEATURE += $(AS_TYPE),
+  AS_FEATURE := $(AS_TYPE)
 endif
 
 ifeq ($(ALIYUN), true)
-  FEATURES += aliyun
+  FEATURES := $(FEATURES),aliyun
 endif
 
 ifeq ($(NEBULA_CA_PLUGIN), true)
-  FEATURES += nebula-ca-plugin
+  FEATURES := $(FEATURES),nebula-ca-plugin
 endif
 
 ifeq ($(VAULT), true)
-  FEATURES += vault
+  FEATURES := $(FEATURES),vault
 endif
 
-ifndef CLI_FEATURES
-  ifdef ATTESTER
-    CLI_FEATURES = "sample_only,$(ATTESTER)"
-  else
-    CLI_FEATURES += "sample_only,all-attesters"
-  endif
+ifeq ($(CLI_FEATURES),sample_only)
+  RUST_CLI_FEATURES = "," # this is a dummy feature to satisfy the cargo build command
+else ifdef ATTESTER
+  RUST_CLI_FEATURES = "$(ATTESTER)"
+else
+  RUST_CLI_FEATURES = "all-attesters"
 endif
 
 ifneq ($(TEST_FEATURES),)
@@ -76,7 +76,7 @@ build: background-check-kbs
 
 .PHONY: background-check-kbs
 background-check-kbs:
-	$(CARGO_ENV) cargo build -p kbs --locked --release --no-default-features --features $(FEATURES),$(AS_FEATURE) $(TARGET_FLAG)
+	$(CARGO_ENV) cargo build -p kbs --locked --release --no-default-features --features $(AS_FEATURE),$(FEATURES) $(TARGET_FLAG)
 
 .PHONY: passport-issuer-kbs
 passport-issuer-kbs:
@@ -90,7 +90,7 @@ passport-resource-kbs:
 
 .PHONY: cli
 cli:
-	$(CARGO_ENV) cargo build -p kbs-client --locked --release --no-default-features --features $(CLI_FEATURES) $(TARGET_FLAG)
+	$(CARGO_ENV) cargo build -p kbs-client --locked --release --no-default-features --features $(RUST_CLI_FEATURES) $(TARGET_FLAG)
 
 .PHONY: cli-static-linux
 cli-static-linux:
@@ -100,8 +100,7 @@ cli-static-linux:
       --config "target.$(ARCH)-unknown-linux-gnu.rustflags = '-C target-feature=+crt-static'" \
       --locked \
       --release \
-      --no-default-features \
-      --features sample_only
+      --no-default-features
 
 install-kbs:
 	install -D -m0755 $(RELEASE_DIR)/kbs $(INSTALL_DESTDIR)

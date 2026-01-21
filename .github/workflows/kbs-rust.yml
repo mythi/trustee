@@ -28,30 +28,27 @@ jobs:
       matrix:
         include:
         - instance: ubuntu-24.04
-          test_features: ""
+          test_features: "pkcs11"
         - instance: ubuntu-24.04-arm
-          test_features: "coco-as-builtin,coco-as-grpc,intel-trust-authority-as,sample_only,cca-attester"
+          test_features: "coco-as-builtin,coco-as-grpc,intel-trust-authority-as,cca-attester,pkcs11"
+        - instance: s390x-large
+          test_features: "coco-as-builtin,coco-as-grpc,intel-trust-authority-as,pkcs11"
     runs-on: ${{ matrix.instance }}
 
     steps:
     - name: Code checkout
-      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
       with:
         persist-credentials: false
 
     - name: Install Rust toolchain
-      uses: actions-rust-lang/setup-rust-toolchain@fb51252c7ba57d633bc668f941da052e410add48 # v1.13.0
+      uses: actions-rust-lang/setup-rust-toolchain@1780873c7b576612439a134613cc4cc74ce5538c # v1.15.2
       with:
         components: rustfmt, clippy
 
     - name: Building dependencies installation
       run: |
         sudo apt-get update && sudo apt-get install -y protobuf-compiler libprotobuf-dev libtss2-dev
-
-    - name: Install TPM dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y libtss2-dev
 
     - name: Install TDX dependencies
       if: ${{ matrix.instance == 'ubuntu-24.04' }}
@@ -73,6 +70,18 @@ jobs:
       working-directory: kbs
       run: make AS_TYPE=intel-trust-authority-as
 
+    - name: KBS Build [background-check-kbs with ALIYUN, NEBULA_CA_PLUGIN, VAULT]
+      working-directory: kbs
+      run: make background-check-kbs ALIYUN=true NEBULA_CA_PLUGIN=true VAULT=true
+
+    - name: KBS Build [passport-issuer-kbs with ALIYUN, NEBULA_CA_PLUGIN, VAULT]
+      working-directory: kbs
+      run: make passport-issuer-kbs ALIYUN=true NEBULA_CA_PLUGIN=true VAULT=true
+
+    - name: KBS Build [passport-resource-kbs with ALIYUN, NEBULA_CA_PLUGIN, VAULT]
+      working-directory: kbs
+      run: make passport-resource-kbs ALIYUN=true NEBULA_CA_PLUGIN=true VAULT=true
+
     - name: Lint
       working-directory: kbs
       run: make lint TEST_FEATURES=${{ matrix.test_features }}
@@ -81,6 +90,18 @@ jobs:
       working-directory: kbs
       run: make format
 
+    - name: setup softhsm for pkcs11 tests
+      if: contains(matrix.test_features, 'pkcs11')
+      working-directory: kbs
+      run: |
+        echo "SETUP tools for pkcs11 ${{ matrix.instance }}"
+        sudo apt-get install -y --no-install-recommends softhsm2 opensc
+        mkdir -p "$RUNNER_TEMP/softhsm/tokens"
+        echo "directories.tokendir = $RUNNER_TEMP/softhsm/tokens" > "$RUNNER_TEMP/softhsm/softhsm2.conf"
+        export SOFTHSM2_CONF="$RUNNER_TEMP/softhsm/softhsm2.conf"
+        softhsm2-util --init-token --free --label "Trustee pkcs11 test" --so-pin 12345678 --pin 12345678
     - name: Test
       working-directory: kbs
+      env:
+        SOFTHSM2_CONF: '${{ runner.temp }}/softhsm/softhsm2.conf'
       run: make check TEST_FEATURES=${{ matrix.test_features }}

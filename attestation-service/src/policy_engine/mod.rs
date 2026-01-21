@@ -1,13 +1,15 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use regorus::Value;
 use serde::Deserialize;
+use serde_json::Value;
 use std::collections::HashMap;
 use std::io;
 use std::path::Path;
 use std::sync::Arc;
 use strum::EnumString;
 use thiserror::Error;
+
+use crate::rvps::RvpsClient;
 
 pub mod opa;
 
@@ -41,8 +43,12 @@ pub enum PolicyError {
     LoadReferenceDataFailed(#[source] anyhow::Error),
     #[error("Failed to set input data: {0}")]
     SetInputDataFailed(#[source] anyhow::Error),
-    #[error("Failed to evaluate policy: {0}")]
-    EvalPolicyFailed(#[source] anyhow::Error),
+    #[error("Failed to evaluate policy `{policy_id}`")]
+    EvalPolicyFailed {
+        policy_id: String,
+        #[source]
+        source: anyhow::Error,
+    },
     #[error("json serialization failed: {0}")]
     JsonSerializationFailed(#[source] anyhow::Error),
     #[error("Policy claim value not valid (must be between -127 and 127)")]
@@ -67,9 +73,19 @@ impl PolicyEngineType {
 
 type PolicyDigest = String;
 
+/// Extensions that will be added to the attestation token.
+#[derive(Debug, Deserialize)]
+pub struct Extension {
+    pub name: String,
+    pub key: i32,
+    pub value: Value,
+}
+
 #[derive(Debug)]
 pub struct EvaluationResult {
-    pub rules_result: HashMap<String, Value>,
+    pub trust_claims: Value,
+    /// Extensions to be added to the attestation token.
+    pub extensions: Vec<Extension>,
     pub policy_hash: String,
 }
 
@@ -83,6 +99,7 @@ pub trait PolicyEngine: Send + Sync {
     /// - `input`: dynamic data that will help to enforce the policy.
     /// - `rules`: the decision statement to be executed by the policy engine
     /// to determine the final output.
+    /// - `rvps_client`: a client that can be used to query reference values.
     ///
     /// In CoCoAS scenarios, `data` is recommended to carry reference values as
     /// it is relatively static. `input` is recommended to carry `tcb_claims`
@@ -90,10 +107,10 @@ pub trait PolicyEngine: Send + Sync {
     /// due to different needs.
     async fn evaluate(
         &self,
-        data: &str,
+        data: Option<&str>,
         input: &str,
         policy_id: &str,
-        evaluation_rules: Vec<String>,
+        rvps_client: Option<RvpsClient>,
     ) -> Result<EvaluationResult, PolicyError>;
 
     /// Add an additional policy to the AS that can be referenced by given policy id.

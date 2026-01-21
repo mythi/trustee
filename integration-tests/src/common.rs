@@ -2,7 +2,10 @@
 // Licensed under the Apache License, Version 2.0, see LICENSE for details.
 // SPDX-License-Identifier: Apache-2.0
 
-use kbs::admin::config::AdminConfig;
+use kbs::admin::{
+    simple::{SimpleAdminConfig, SimplePersonaConfig},
+    AdminBackendType, AdminConfig,
+};
 use kbs::attestation::config::{AttestationConfig, AttestationServiceConfig};
 use kbs::config::HttpServerConfig;
 use kbs::config::KbsConfig;
@@ -17,8 +20,8 @@ use kbs::plugins::{
 
 use attestation_service::{
     config::Config,
+    ear_token::EarTokenConfiguration,
     rvps::{grpc::RvpsRemoteConfig, RvpsConfig, RvpsCrateConfig},
-    token::{ear_broker, simple, AttestationTokenConfig},
 };
 
 use reference_value_provider_service::client as rvps_client;
@@ -28,7 +31,10 @@ use reference_value_provider_service::storage::{local_json, ReferenceValueStorag
 use reference_value_provider_service::{server::RvpsServer, Rvps};
 
 use anyhow::{anyhow, bail, Result};
-use base64::{engine::general_purpose::STANDARD, Engine};
+use base64::{
+    engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
+    Engine,
+};
 use log::info;
 use openssl::pkey::PKey;
 use serde_json::json;
@@ -37,9 +43,9 @@ use tempfile::TempDir;
 use tokio::sync::RwLock;
 use tonic::transport::Server;
 
-const KBS_URL: &str = "http://127.0.0.1:8080";
-const RVPS_URL: &str = "http://127.0.0.1:50003";
-const WAIT_TIME: u64 = 3000;
+const KBS_URL: &str = "http://127.0.0.1:8081";
+const RVPS_URL: &str = "http://127.0.0.1:51003";
+const WAIT_TIME: u64 = 5000;
 
 const ALLOW_ALL_POLICY: &str = "
     package policy
@@ -62,29 +68,35 @@ pub enum RvpsType {
     Remote,
 }
 
+pub enum AdminType {
+    DenyAll,
+    Simple,
+}
+
 /// An enum that selects between TestParameter configurations
 /// so that TestParameters can be reused between tests.
+#[derive(PartialEq, Clone)]
 pub enum KbsConfigType {
     EarTokenBuiltInRvps,
-    SimpleTokenBuiltInRvps,
+    EarTokenBuiltInRvpsDenyAllAdmin,
     EarTokenRemoteRvps,
 }
 
 /// The KbsConfigType enum can be turned into TestParameters
-impl Into<TestParameters> for KbsConfigType {
-    fn into(self) -> TestParameters {
-        match self {
+impl From<KbsConfigType> for TestParameters {
+    fn from(val: KbsConfigType) -> Self {
+        match val {
             KbsConfigType::EarTokenBuiltInRvps => TestParameters {
-                attestation_token_type: "Ear".to_string(),
                 rvps_type: RvpsType::Builtin,
-            },
-            KbsConfigType::SimpleTokenBuiltInRvps => TestParameters {
-                attestation_token_type: "Simple".to_string(),
-                rvps_type: RvpsType::Builtin,
+                admin_type: AdminType::Simple,
             },
             KbsConfigType::EarTokenRemoteRvps => TestParameters {
-                attestation_token_type: "Ear".to_string(),
                 rvps_type: RvpsType::Remote,
+                admin_type: AdminType::Simple,
+            },
+            KbsConfigType::EarTokenBuiltInRvpsDenyAllAdmin => TestParameters {
+                rvps_type: RvpsType::Builtin,
+                admin_type: AdminType::DenyAll,
             },
         }
     }
@@ -92,14 +104,14 @@ impl Into<TestParameters> for KbsConfigType {
 
 /// Parameters that define test behavior
 pub struct TestParameters {
-    pub attestation_token_type: String,
     pub rvps_type: RvpsType,
+    pub admin_type: AdminType,
 }
 
 /// Internal state of tests
 pub struct TestHarness {
     pub kbs_config: KbsConfig,
-    auth_privkey: String,
+    pub auth_privkey: String,
     kbs_server_handle: actix_web::dev::ServerHandle,
     _work_dir: TempDir,
 
@@ -135,19 +147,11 @@ impl TestHarness {
             .map_err(|e| anyhow!("Failed to join reference values path: {:?}", e))?;
         let auth_pubkey_path = work_dir.path().join("auth_pubkey");
 
-        tokio::fs::write(auth_pubkey_path, auth_pubkey.as_bytes()).await?;
+        tokio::fs::write(auth_pubkey_path.clone(), auth_pubkey.as_bytes()).await?;
 
-        let attestation_token_config = match &test_parameters.attestation_token_type[..] {
-            "Ear" => AttestationTokenConfig::Ear(ear_broker::Configuration {
-                duration_min: 5,
-                policy_dir: as_policy_dir,
-                ..Default::default()
-            }),
-            "Simple" => AttestationTokenConfig::Simple(simple::Configuration {
-                policy_dir: as_policy_dir,
-                ..Default::default()
-            }),
-            _ => bail!("Unknown attestation token type. Must be Simple or Ear"),
+        let attestation_token_config = EarTokenConfiguration {
+            policy_dir: as_policy_dir,
+            ..Default::default()
         };
 
         // Setup RVPS either remotely or builtin
@@ -171,14 +175,32 @@ impl TestHarness {
 
                 let rvps_future = Server::builder()
                     .add_service(ReferenceValueProviderServiceServer::new(rvps_server))
-                    .serve("127.0.0.1:50003".parse()?);
+                    .serve("127.0.0.1:51003".parse()?);
 
                 tokio::spawn(rvps_future);
+
+                // Wait for rvps to start
+                let duration = tokio::time::Duration::from_millis(WAIT_TIME);
+                tokio::time::sleep(duration).await;
 
                 RvpsConfig::GrpcRemote(RvpsRemoteConfig {
                     address: RVPS_URL.to_string(),
                 })
             }
+        };
+
+        let admin_config = match &test_parameters.admin_type {
+            AdminType::Simple => AdminConfig {
+                admin_backend: AdminBackendType::Simple(SimpleAdminConfig {
+                    personas: vec![SimplePersonaConfig {
+                        id: "tester".to_string(),
+                        public_key_path: auth_pubkey_path.as_path().to_path_buf(),
+                    }],
+                }),
+            },
+            AdminType::DenyAll => AdminConfig {
+                admin_backend: AdminBackendType::DenyAll,
+            },
         };
 
         let kbs_config = KbsConfig {
@@ -193,22 +215,19 @@ impl TestHarness {
                     work_dir: work_dir.path().to_path_buf(),
                     rvps_config,
                     attestation_token_broker: attestation_token_config,
+                    verifier_config: None,
                 }),
                 timeout: 5,
             },
             http_server: HttpServerConfig {
-                sockets: vec!["127.0.0.1:8080".parse()?],
+                sockets: vec!["127.0.0.1:8081".parse()?],
                 private_key: None,
                 certificate: None,
                 insecure_http: true,
                 payload_request_size: 2,
                 worker_count: Some(4),
-            
             },
-            admin: AdminConfig {
-                auth_public_key: None,
-                insecure_api: true,
-            },
+            admin: admin_config,
             policy_engine: PolicyEngineConfig {
                 policy_path: kbs_policy_path,
             },
@@ -291,10 +310,20 @@ impl TestHarness {
         Ok(())
     }
 
-    pub async fn get_secret(&self, secret_path: String) -> Result<Vec<u8>> {
+    pub async fn get_secret(
+        &self,
+        secret_path: String,
+        init_data: Option<String>,
+    ) -> Result<Vec<u8>> {
         info!("TEST: Getting Secret");
-        let resource_bytes =
-            kbs_client::get_resource_with_attestation(KBS_URL, &secret_path, None, vec![]).await?;
+        let resource_bytes = kbs_client::get_resource_with_attestation(
+            KBS_URL,
+            &secret_path,
+            None,
+            vec![],
+            init_data,
+        )
+        .await?;
 
         Ok(resource_bytes)
     }
@@ -317,5 +346,24 @@ impl TestHarness {
         rvps_client::register(RVPS_URL.to_string(), message.to_string()).await?;
 
         Ok(())
+    }
+
+    pub async fn get_attestation_token_payload(
+        &self,
+        init_data: Option<String>,
+    ) -> Result<serde_json::Value> {
+        let token = kbs_client::attestation(KBS_URL, None, vec![], init_data).await?;
+
+        let parts: Vec<&str> = token.split('.').collect();
+        if parts.len() != 3 {
+            bail!("Invalid attestation token.");
+        }
+
+        let payload_base64 = parts[1];
+        let payload_bytes = URL_SAFE_NO_PAD.decode(payload_base64)?;
+
+        let payload: serde_json::Value = serde_json::from_slice(&payload_bytes)?;
+
+        Ok(payload)
     }
 }
