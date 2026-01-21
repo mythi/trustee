@@ -344,13 +344,15 @@ pub fn read_vcek_from_cache(report: &AttestationReport) -> Result<Vec<u8>> {
         });
 
     // 5. Handle the result of the `find` operation.
-    match cert_data {
-        Some((data, _cert, _path)) => Ok(data),
+    let _ = match cert_data {
+        Some((data, _cert, _path)) => Ok::<Vec<u8>, Certificate>(data),
         None => bail!(
-            "No VCEK certificate found in {} directory that verifies the report",
+            "No VCEK certificate found in {} that verifies the report",
             vcek_dir.display()
         ),
-    }
+    };
+
+    bail!("No VCEK certificate found in {} directory that verifies the report", vcek_dir.display());
 }
 
 /// Retrieves the octet string value for a given OID from a certificate's extensions.
