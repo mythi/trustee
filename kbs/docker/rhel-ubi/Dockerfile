@@ -38,7 +38,9 @@ popd
 
 # Build KBS.
 RUN ARCH=$(uname -m) && \
-export OPENSSL_NO_VENDOR=1; \
+if [ ${ARCH} = "s390x" ]; then \
+  export OPENSSL_NO_VENDOR=1; \
+fi && \
 pushd kbs && make AS_FEATURE=coco-as-builtin ALIYUN=${ALIYUN} ARCH=${ARCH} && make ARCH=${ARCH} install-kbs && popd
 
 
