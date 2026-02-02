@@ -11,8 +11,8 @@ all-verifier = [
     "snp-verifier",
     "az-snp-vtpm-verifier",
     "az-tdx-vtpm-verifier",
-    "csv-verifier",
-    "hygon-dcu-verifier",
+    # "csv-verifier",  # Disabled: requires SM4 cipher not available in RHEL OpenSSL
+    # "hygon-dcu-verifier",  # Disabled: requires SM4 cipher not available in RHEL OpenSSL
     "cca-verifier",
     "se-verifier",
     "nvidia-verifier",
