@@ -12,6 +12,7 @@ use actix_web::http::Method;
 use anyhow::{anyhow, bail, Context, Error, Result};
 use semver::{Version, VersionReq};
 use std::{
+    collections::HashMap,
     ffi::OsString,
     fs,
     path::{Path, PathBuf},
@@ -68,11 +69,12 @@ pub struct NebulaCredentialParams {
     subnets: Option<String>,
 }
 
-impl TryFrom<&str> for NebulaCredentialParams {
+impl TryFrom<&HashMap<String, String>> for NebulaCredentialParams {
     type Error = Error;
 
-    fn try_from(query: &str) -> Result<Self> {
-        let params: NebulaCredentialParams = serde_qs::from_str(query)?;
+    fn try_from(query: &HashMap<String, String>) -> Result<Self> {
+        let query_string = serde_json::to_string(query)?;
+        let params: NebulaCredentialParams = serde_json::from_str(&query_string)?;
         Ok(params)
     }
 }
@@ -396,20 +398,20 @@ impl ClientPlugin for NebulaCaPlugin {
     async fn handle(
         &self,
         _body: &[u8],
-        query: &str,
-        path: &str,
+        query: &HashMap<String, String>,
+        path: &[&str],
         method: &Method,
     ) -> Result<Vec<u8>> {
-        let sub_path = path
-            .strip_prefix('/')
-            .context("accessed path is illegal, should start with `/`")?;
+        if path.len() != 1 {
+            bail!("Illegal path. Only one path segment is supported");
+        }
         if method.as_str() != "GET" {
             bail!("Illegal HTTP method. Only GET is supported");
         }
 
         // The Nebula CA plugin is stateless, so none of request types below should
         // store state.
-        match sub_path {
+        match path[0] {
             // Create credential for the provided parameters.
             // The credential directory (and its files) is auto-deleted after the Credential is returned.
             "credential" => {
@@ -425,15 +427,15 @@ impl ClientPlugin for NebulaCaPlugin {
 
                 Ok(serde_json::to_vec(&credential)?)
             }
-            _ => Err(anyhow!("{} not supported", sub_path))?,
+            _ => Err(anyhow!("{} not supported", path[0]))?,
         }
     }
 
     async fn validate_auth(
         &self,
         _body: &[u8],
-        _query: &str,
-        _path: &str,
+        _query: &HashMap<String, String>,
+        _path: &[&str],
         _method: &Method,
     ) -> Result<bool> {
         Ok(false)
@@ -442,8 +444,8 @@ impl ClientPlugin for NebulaCaPlugin {
     async fn encrypted(
         &self,
         _body: &[u8],
-        _query: &str,
-        _path: &str,
+        _query: &HashMap<String, String>,
+        _path: &[&str],
         _method: &Method,
     ) -> Result<bool> {
         Ok(true)

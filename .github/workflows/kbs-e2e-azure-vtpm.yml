@@ -16,29 +16,29 @@ jobs:
       packages: write
     steps:
     - name: Checkout Code
-      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
       with:
         persist-credentials: false
 
     - name: Archive source
       run: git archive -o kbs.tar.gz HEAD
 
-    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+    - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
       with:
         path: ./kbs.tar.gz
 
-  # https://github.com/confidential-containers/trustee/issues/951
-  # tdx-e2e-test:
-  #   needs:
-  #   - checkout
-  #   uses: ./.github/workflows/kbs-e2e.yml
-  #   permissions:
-  #     packages: write
-  #     contents: read
-  #   with:
-  #     runs-on-test: '["self-hosted","azure-cvm-tdx"]'
-  #     tee: aztdxvtpm
-  #     tarball: kbs.tar.gz
+  tdx-e2e-test:
+    needs:
+    - checkout
+    uses: ./.github/workflows/kbs-e2e.yml
+    permissions:
+      packages: write
+      contents: read
+    with:
+      runs-on-test: '["self-hosted","azure-cvm-tdx"]'
+      tee: az-tdx-vtpm
+      tarball: kbs.tar.gz
+      kbs-client-features: az-tdx-vtpm-attester
 
   snp-e2e-test:
     needs:
@@ -49,5 +49,6 @@ jobs:
       contents: read
     with:
       runs-on-test: '["self-hosted","azure-cvm"]'
-      tee: azsnpvtpm
+      tee: az-snp-vtpm
       tarball: kbs.tar.gz
+      kbs-client-features: az-snp-vtpm-attester

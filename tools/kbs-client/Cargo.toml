@@ -15,12 +15,10 @@ path = "src/main.rs"
 [dependencies]
 anyhow.workspace = true
 base64.workspace = true
-base64ct.workspace = true
-picky-asn1-der.workspace = true
-clap = { version = "4.5.42", features = ["derive"] }
+clap = { version = "4.5.53", features = ["derive"] }
 env_logger.workspace = true
 jwt-simple.workspace = true
-kbs_protocol = { workspace = true, default-features = false }
+kbs_protocol = { workspace = true, default-features = false, features = ["background_check", "passport"] }
 log.workspace = true
 reqwest = { workspace = true, default-features = false, features = ["cookies", "json"] }
 serde = { workspace = true, features = ["derive"] }
@@ -28,8 +26,7 @@ serde_json.workspace = true
 tokio.workspace = true
 
 [features]
-default = ["kbs_protocol/default"]
-sample_only = ["kbs_protocol/background_check", "kbs_protocol/passport", "kbs_protocol/rust-crypto"]
+default = []
 
 all-attesters = ["kbs_protocol/all-attesters"]
 tdx-attester = ["kbs_protocol/tdx-attester"]
@@ -40,3 +37,4 @@ snp-attester = ["kbs_protocol/snp-attester"]
 csv-attester = ["kbs_protocol/csv-attester"]
 cca-attester = ["kbs_protocol/cca-attester"]
 se-attester  = ["kbs_protocol/se-attester"]
+tpm-attester = ["kbs_protocol/tpm-attester"]

@@ -4,6 +4,8 @@
 
 //! This is a sample to implement a client plugin
 
+use std::collections::HashMap;
+
 use actix_web::http::Method;
 use anyhow::Result;
 use serde::Deserialize;
@@ -32,8 +34,8 @@ impl ClientPlugin for Sample {
     async fn handle(
         &self,
         _body: &[u8],
-        _query: &str,
-        _path: &str,
+        _query: &HashMap<String, String>,
+        _path: &[&str],
         _method: &Method,
     ) -> Result<Vec<u8>> {
         Ok("sample plugin response".as_bytes().to_vec())
@@ -42,8 +44,8 @@ impl ClientPlugin for Sample {
     async fn validate_auth(
         &self,
         _body: &[u8],
-        _query: &str,
-        _path: &str,
+        _query: &HashMap<String, String>,
+        _path: &[&str],
         _method: &Method,
     ) -> Result<bool> {
         Ok(true)
@@ -55,8 +57,8 @@ impl ClientPlugin for Sample {
     async fn encrypted(
         &self,
         _body: &[u8],
-        _query: &str,
-        _path: &str,
+        _query: &HashMap<String, String>,
+        _path: &[&str],
         _method: &Method,
     ) -> Result<bool> {
         Ok(false)

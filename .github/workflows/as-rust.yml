@@ -5,15 +5,15 @@ on:
       - "main"
     paths:
       - 'attestation-service/**'
-      - 'rvps'
-      - 'deps/verifier'
+      - 'rvps/**'
+      - 'deps/**'
       - '.github/workflows/as_rust.yml'
       - 'Cargo.toml'
   pull_request:
     paths:
       - 'attestation-service/**'
-      - 'rvps'
-      - 'deps/verifier'
+      - 'rvps/**'
+      - 'deps/**'
       - '.github/workflows/as_rust.yml'
       - 'Cargo.toml'
   create:
@@ -28,13 +28,13 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Code checkout
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
         with:
           fetch-depth: 1
           persist-credentials: false
 
       - name: Install OPA command line tool
-        uses: open-policy-agent/setup-opa@34a30e8a924d1b03ce2cf7abe97250bbb1f332b5 # v2.2.0 # v2
+        uses: open-policy-agent/setup-opa@950f159a49aa91f9323f36f1de81c7f6b5de9576 # v2.2.0 # v2
         with:
           version: latest
 
@@ -60,9 +60,17 @@ jobs:
           sudo apt-get install -y libsgx-dcap-quote-verify-dev libsgx-dcap-default-qpl
 
       - name: Install Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@fb51252c7ba57d633bc668f941da052e410add48 # v1.13.0
+        uses: actions-rust-lang/setup-rust-toolchain@1780873c7b576612439a134613cc4cc74ce5538c # v1.15.2
         with:
           components: rustfmt, clippy
+
+      - name: Run cargo fmt check
+        run: |
+          cargo fmt -p attestation-service -p reference-value-provider-service -p eventlog -p verifier -p key-value-storage -p policy-engine --check
+
+      - name: Run rust lint check
+        run: |
+          cargo clippy -p attestation-service -p reference-value-provider-service -p eventlog -p verifier -p key-value-storage -p policy-engine -- -D warnings
 
       - name: Build
         working-directory: attestation-service
@@ -71,12 +79,4 @@ jobs:
 
       - name: Run cargo test
         run: |
-          sudo -E PATH="$PATH" -s cargo test -p attestation-service -p reference-value-provider-service -p verifier -p eventlog
-
-      - name: Run cargo fmt check
-        run: |
-          sudo -E PATH="$PATH" -s cargo fmt -p attestation-service -p reference-value-provider-service -p eventlog --check
-
-      - name: Run rust lint check
-        run: |
-          sudo -E PATH="$PATH" -s cargo clippy -p attestation-service -p reference-value-provider-service -p eventlog -- -D warnings -A clippy::derive_partial_eq_without_eq
+          sudo -E PATH="$PATH" -s cargo test -p attestation-service -p reference-value-provider-service -p verifier -p eventlog -p key-value-storage -p policy-engine

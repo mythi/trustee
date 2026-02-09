@@ -4,7 +4,7 @@
 
 use super::backend::{ResourceDesc, StorageBackend};
 use anyhow::{Context, Result};
-use derivative::Derivative;
+use educe::Educe;
 use log::info;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -28,11 +28,11 @@ pub enum VaultError {
     VaultApiError { path: String, source: anyhow::Error },
 }
 
-#[derive(Derivative, Deserialize, Clone, PartialEq)]
-#[derivative(Debug)]
+#[derive(Educe, Deserialize, Clone, PartialEq)]
+#[educe(Debug)]
 pub struct VaultKvBackendConfig {
     pub vault_url: String,
-    #[derivative(Debug = "ignore")]
+    #[educe(Debug(ignore))]
     pub token: String,
     #[serde(default = "default_mount_path")]
     pub mount_path: String,
@@ -65,7 +65,7 @@ impl StorageBackend for VaultKvBackend {
 
         info!("Reading secret from Vault path: {}", vault_path);
 
-        let secret_data: HashMap<String, String> =
+        let secret_data: HashMap<String, Vec<u8>> =
             kv1::get(&self.client, &self.mount_path, &vault_path)
                 .await
                 .map_err(|e| {
@@ -82,17 +82,15 @@ impl StorageBackend for VaultKvBackend {
                     }
                 })?;
 
-        secret_data
-            .get("data")
-            .map(|v| v.as_bytes().to_vec())
-            .ok_or_else(|| {
-                let available_keys = secret_data.keys().cloned().collect();
-                VaultError::DataKeyMissing {
-                    path: vault_path,
-                    available_keys,
-                }
-                .into()
-            })
+        let bytes = secret_data.get("data").cloned().ok_or_else(|| {
+            let available_keys = secret_data.keys().cloned().collect();
+            VaultError::DataKeyMissing {
+                path: vault_path.clone(),
+                available_keys,
+            }
+        })?;
+
+        Ok(bytes)
     }
 
     async fn write_secret_resource(&self, resource_desc: ResourceDesc, data: &[u8]) -> Result<()> {
@@ -103,13 +101,8 @@ impl StorageBackend for VaultKvBackend {
 
         info!("Writing secret to Vault path: {}", vault_path);
 
-        // Convert data to string for Vault storage
-        let data_str =
-            String::from_utf8(data.to_vec()).context("Failed to convert data to UTF-8 string")?;
-
         // Create a HashMap with the data - using &str keys as expected by vaultrs
-        let mut secret_data = std::collections::HashMap::new();
-        secret_data.insert("data", data_str.as_str());
+        let secret_data: HashMap<&str, Vec<u8>> = HashMap::from([("data", data.to_vec())]);
 
         kv1::set(&self.client, &self.mount_path, &vault_path, &secret_data)
             .await

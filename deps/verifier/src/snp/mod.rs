@@ -5,14 +5,15 @@ use anyhow::anyhow;
 use asn1_rs::{oid, FromDer, Integer, OctetString, Oid};
 use async_trait::async_trait;
 use base64::{engine::general_purpose::STANDARD, Engine};
-use log::{debug, warn};
+use http_cache_reqwest::{
+    Cache, CacheMode, HttpCache, HttpCacheOptions, MokaCacheBuilder, MokaManager,
+};
 use openssl::{
     nid::Nid,
     x509::{self, X509},
 };
-use reqwest::{get, Response as ReqwestResponse, StatusCode};
-use std::{fs, path::Path};
-
+use reqwest::{Response as ReqwestResponse, StatusCode};
+use reqwest_middleware::ClientBuilder;
 use serde;
 use serde_json::json;
 use sev::{
@@ -22,9 +23,17 @@ use sev::{
         host::{CertTableEntry, CertType},
     },
 };
-use std::{collections::HashMap, hash::Hash, result::Result::Ok, sync::LazyLock};
+use std::{
+    collections::HashMap,
+    hash::Hash,
+    result::Result::Ok,
+    sync::{LazyLock, OnceLock},
+};
 use strum::{Display, EnumIter, EnumString, IntoEnumIterator};
+use tracing::{debug, instrument, warn};
 use x509_parser::prelude::*;
+
+use std::time::Instant;
 
 #[derive(Serialize, Deserialize)]
 pub struct SnpEvidence {
@@ -55,8 +64,8 @@ pub(crate) const FMC_SPL_OID: Oid<'static> = oid!(1.3.6 .1 .4 .1 .3704 .1 .3 .9)
 const KDS_CERT_SITE: &str = "https://kdsintf.amd.com";
 const KDS_VCEK: &str = "/vcek/v1";
 
-// VCEK cache directory
-const VCEK_CACHE_DIR: &str = "/etc/kbs/snp/ek";
+// KDS Offline Store
+const KDS_OFFLINE_STORE_PATH: &str = "/opt/confidential-containers/attestation-service/kds-store";
 
 /// Attestation report versions supported
 const REPORT_VERSION_MIN: u32 = 3;
@@ -93,8 +102,211 @@ pub(crate) static CERT_CHAINS: LazyLock<HashMap<ProcessorGeneration, VendorCerti
         map
     });
 
-#[derive(Default, Debug)]
-pub struct Snp {}
+static VCEK_CACHE_MANAGER: OnceLock<MokaManager> = OnceLock::new();
+
+fn init_cache_manager() -> MokaManager {
+    MokaManager::new(MokaCacheBuilder::new(1024).build())
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct Snp {
+    verifier_config: SnpVerifierConfig,
+}
+
+impl Snp {
+    pub async fn new(config: Option<SnpVerifierConfig>) -> Result<Self> {
+        Ok(Snp {
+            verifier_config: config.unwrap_or_default(),
+        })
+    }
+
+    fn build_vcek_client(&self) -> reqwest_middleware::ClientWithMiddleware {
+        let client_options = HttpCacheOptions {
+            cache_status_headers: true,
+            ..Default::default()
+        };
+
+        let cache = Cache(HttpCache {
+            mode: CacheMode::Default,
+            manager: VCEK_CACHE_MANAGER.get_or_init(init_cache_manager).clone(),
+            options: client_options,
+        });
+
+        ClientBuilder::new(reqwest::Client::new())
+            .with(cache)
+            .build()
+    }
+
+    /// Fetches VCEK by trying each configured source in order until one succeeds
+    async fn fetch_vcek(
+        &self,
+        att_report: AttestationReport,
+        proc_gen: ProcessorGeneration,
+    ) -> Result<Vec<u8>> {
+        for source in &self.verifier_config.vcek_sources {
+            let result = match source {
+                VCEKSource::OfflineStore { path } => {
+                    self.fetch_vcek_from_offline_store(att_report, &proc_gen, path.clone())
+                }
+                VCEKSource::KDS { base_url } => {
+                    self.fetch_vcek_from_kds(att_report, &proc_gen, base_url.clone())
+                        .await
+                }
+            };
+
+            if let Ok(vcek_bytes) = result {
+                debug!("fetched vcek from {:?}", source);
+                return Ok(vcek_bytes);
+            }
+        }
+
+        debug!(
+            "failed to fetch vcek from all configured sources {:?}",
+            self.verifier_config.vcek_sources
+        );
+        bail!("Failed to fetch VCEK from any configured source")
+    }
+
+    fn fetch_vcek_from_offline_store(
+        &self,
+        att_report: AttestationReport,
+        proc_gen: &ProcessorGeneration,
+        path: Option<String>,
+    ) -> Result<Vec<u8>> {
+        // default dir should contain the /vcek segment
+        let path = path.unwrap_or(KDS_OFFLINE_STORE_PATH.to_string());
+        let hw_id = self.parse_hw_id_from_vcek(att_report, proc_gen.clone());
+        let vcek_path = format!("{}/vcek/{}/vcek.der", path, hw_id);
+        let vcek_bytes = std::fs::read(&vcek_path)
+            .with_context(|| format!("Failed to read VCEK from offline store at {}", vcek_path))?;
+        Ok(vcek_bytes)
+    }
+
+    fn parse_hw_id_from_vcek(
+        &self,
+        att_report: AttestationReport,
+        proc_gen: ProcessorGeneration,
+    ) -> String {
+        match proc_gen {
+            ProcessorGeneration::Turin => {
+                let shorter_bytes: &[u8] = &att_report.chip_id[0..8];
+                hex::encode(shorter_bytes)
+            }
+            _ => hex::encode(att_report.chip_id),
+        }
+    }
+
+    /// Asynchronously fetches the VCEK from the Key Distribution Service (KDS) using the provided attestation report.
+    /// Returns the VCEK in DER format.
+    async fn fetch_vcek_from_kds(
+        &self,
+        att_report: AttestationReport,
+        proc_gen: &ProcessorGeneration,
+        kds_url: Option<String>,
+    ) -> Result<Vec<u8>> {
+        // Use attestation report to get data for URL
+        if att_report.chip_id.as_slice() == [0; 64] {
+            bail!("Hardware ID is 0s on attestation report. Confirm that MASK_CHIP_ID is set to 0 to request VCEK from KDS.");
+        }
+
+        let hw_id = self.parse_hw_id_from_vcek(att_report, proc_gen.clone());
+
+        // Request VCEK from KDS
+        let vcek_url: String = match proc_gen {
+            ProcessorGeneration::Turin => {
+                let Some(fmc) = att_report.reported_tcb.fmc else {
+                    bail!("A Turin processor must have a fmc value");
+                };
+
+                format!(
+                    "{}{KDS_VCEK}/{}/\
+                    {hw_id}?fmcSPL={:02}&blSPL={:02}&teeSPL={:02}&snpSPL={:02}&ucodeSPL={:02}",
+                    kds_url.unwrap_or(KDS_CERT_SITE.to_string()),
+                    proc_gen,
+                    fmc,
+                    att_report.reported_tcb.bootloader,
+                    att_report.reported_tcb.tee,
+                    att_report.reported_tcb.snp,
+                    att_report.reported_tcb.microcode
+                )
+            }
+            _ => {
+                format!(
+                    "{}{KDS_VCEK}/{}/\
+                    {hw_id}?blSPL={:02}&teeSPL={:02}&snpSPL={:02}&ucodeSPL={:02}",
+                    kds_url.unwrap_or(KDS_CERT_SITE.to_string()),
+                    proc_gen,
+                    att_report.reported_tcb.bootloader,
+                    att_report.reported_tcb.tee,
+                    att_report.reported_tcb.snp,
+                    att_report.reported_tcb.microcode
+                )
+            }
+        };
+
+        let client = self.build_vcek_client();
+        let start = Instant::now();
+
+        let vcek_rsp: ReqwestResponse = client
+            .get(vcek_url.clone())
+            .send()
+            .await
+            .context("Unable to send request for VCEK")?;
+
+        let duration = start.elapsed();
+
+        // Log cache status if available, otherwise log direct fetch
+        if let Some(cache_status) = vcek_rsp.headers().get("x-cache") {
+            debug!(
+                "VCEK fetch: {:?} from {:?} ({:?})",
+                cache_status, vcek_url, duration
+            );
+        } else {
+            debug!(
+                "VCEK fetch: direct from KDS {:?} ({:?})",
+                vcek_url, duration
+            );
+        }
+
+        match vcek_rsp.status() {
+            StatusCode::OK => {
+                let vcek_rsp_bytes: Vec<u8> = vcek_rsp
+                    .bytes()
+                    .await
+                    .context("Unable to parse VCEK")?
+                    .to_vec();
+                Ok(vcek_rsp_bytes)
+            }
+
+            status => bail!("Unable to fetch VCEK from URL: {status:?}, {vcek_url:?}"),
+        }
+    }
+}
+
+fn default_vcek_sources() -> Vec<VCEKSource> {
+    vec![VCEKSource::KDS { base_url: None }]
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+pub struct SnpVerifierConfig {
+    #[serde(default = "default_vcek_sources")]
+    pub vcek_sources: Vec<VCEKSource>,
+}
+
+impl Default for SnpVerifierConfig {
+    fn default() -> Self {
+        Self {
+            vcek_sources: default_vcek_sources(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(tag = "type")]
+pub enum VCEKSource {
+    OfflineStore { path: Option<String> },
+    KDS { base_url: Option<String> },
+}
 
 #[derive(Clone, Debug)]
 pub(crate) enum VendorEndorsementKey {
@@ -127,6 +339,7 @@ impl Verifier for Snp {
     /// Evaluates the provided evidence against the expected report data and initialize data hash.
     /// Validates the report signature, version, VMPL, and other fields.
     /// Returns parsed claims if the verification is successful.
+    #[instrument(skip_all, name = "AMD SNP")]
     async fn evaluate(
         &self,
         evidence: TeeEvidence,
@@ -222,24 +435,15 @@ impl Verifier for Snp {
                 vek.clone()
             }
 
-            // No certificate chain provided, so we need to check for local certificates or request the VCEK from KDS
+            // No certificate chain provided, so we need to request the VCEK from configured sources
             _ => {
-                let vcek = match read_vcek_from_cache(&report) {
-                    Ok(cert) => {
-                        log::info!("Successfully read VCEK from cache");
-                        Certificate::from_bytes(&cert)
-                            .context("Failed to convert cached VCEK into certificate")?
-                    }
-                    Err(e) => {
-                        log::warn!("Failed to read VCEK from cache: {}, fetching from KDS", e);
-                        // Get VCEK from KDS
-                        let vcek_buf = fetch_vcek_from_kds(report, proc_gen.clone())
-                            .await
-                            .context("Failed to fetch VCEK from KDS")?;
-                        Certificate::from_bytes(&vcek_buf)
-                            .context("Failed to convert KDS VCEK into certificate")?
-                    }
-                };
+                // Get VCEK from configured sources (tries each in order)
+                let vcek_buf = self
+                    .fetch_vcek(report, proc_gen.clone())
+                    .await
+                    .context("Failed to fetch VCEK from any configured source")?;
+                let vcek = Certificate::from_bytes(&vcek_buf)
+                    .context("Failed to convert KDS VCEK into certificate")?;
 
                 let chain = Chain {
                     ca: CaChain {
@@ -252,7 +456,7 @@ impl Verifier for Snp {
                 // Verify the chain and return vek if succesful
                 chain
                     .verify()
-                    .context("Certificate chain failed verification")?;
+                    .context("Certificate chain from KDS failed verification")?;
 
                 // Return the vcek
                 vcek.clone()
@@ -299,57 +503,6 @@ impl Verifier for Snp {
         let claims_map = parse_tee_evidence(&report);
         let json = json!(claims_map);
         Ok(vec![(json, "cpu".to_string())])
-    }
-}
-
-/// Reads the first VCEK certificate from the filesystem cache that successfully verifies against the given report.
-/// Returns the certificate in DER format as Vec<u8>.
-/// This function determines the processor generation from the report and reads from the appropriate subdirectory
-/// (/etc/kbs/snp/ek/milan, /etc/kbs/snp/ek/genoa, or /etc/kbs/snp/ek/turin).
-pub fn read_vcek_from_cache(report: &AttestationReport) -> Result<Vec<u8>> {
-    // Get the processor generation from the report
-    let proc_gen = get_processor_generation(report)?;
-    
-    let vcek_dir = Path::new(VCEK_CACHE_DIR).join(proc_gen.to_string().to_lowercase());
-
-    if !vcek_dir.is_dir() {
-        bail!("{} directory not found", vcek_dir.display());
-    }
-
-    let cert_data = fs::read_dir(&vcek_dir)?
-        // 1. Filter out directory entries that are errors.
-        .filter_map(Result::ok)
-        // 2. Keep only entries that are files.
-        .filter(|entry| entry.path().is_file())
-        // 3. Try to read and parse each file, returning the raw data and parsed cert.
-        //    This filters out files that can't be read or parsed.
-        .filter_map(|entry| {
-            let path = entry.path();
-            let data = fs::read(&path).ok()?; // .ok() converts Result to Option
-            let cert = Certificate::from_bytes(&data).ok()?;
-            Some((data, cert, path)) // Pass data, cert, and path along
-        })
-        // 4. Find the first one that successfully verifies the report.
-        .find(|(_data, cert, path)| {
-            match (cert, report).verify() {
-                Ok(_) => {
-                    log::info!("Found VCEK certificate that verifies report: {}", path.display());
-                    true
-                }
-                Err(e) => {
-                    log::debug!("Certificate {} does not verify report: {}", path.display(), e);
-                    false
-                }
-            }
-        });
-
-    // 5. Handle the result of the `find` operation.
-    match cert_data {
-        Some((data, _cert, _path)) => Ok(data),
-        None => bail!(
-            "No VCEK certificate found in {} directory that verifies the report",
-            vcek_dir.display()
-        ),
     }
 }
 
@@ -409,7 +562,7 @@ pub(crate) fn verify_report_tcb(
     // if the common name is "VCEK", then the key is a VCEK
     // so lets check the chip id
     if common_name == "VCEK"
-        && get_oid_octets::<64>(&parsed_endorsement_key, HW_ID_OID)? != *report.chip_id
+        && get_oid_octets::<64>(&parsed_endorsement_key, HW_ID_OID)? != report.chip_id
     {
         bail!("Chip ID mismatch");
     }
@@ -487,75 +640,6 @@ pub(crate) fn get_common_name(cert: &x509::X509) -> Result<String> {
     Ok(e.data().as_utf8()?.to_string())
 }
 
-/// Asynchronously fetches the VCEK from the Key Distribution Service (KDS) using the provided attestation report.
-/// Returns the VCEK in DER format as part of a certificate table entry.
-async fn fetch_vcek_from_kds(
-    att_report: AttestationReport,
-    proc_gen: ProcessorGeneration,
-) -> Result<Vec<u8>> {
-    // Use attestation report to get data for URL
-    let hw_id: String = if att_report.chip_id.as_slice() != [0; 64] {
-        match proc_gen {
-            ProcessorGeneration::Turin => {
-                let shorter_bytes: &[u8] = &att_report.chip_id[0..8];
-                hex::encode(shorter_bytes)
-            }
-            _ => hex::encode(att_report.chip_id),
-        }
-    } else {
-        bail!("Hardware ID is 0s on attestation report. Confirm that MASK_CHIP_ID is set to 0 to request from VCEK from KDS.");
-    };
-
-    // Request VCEK from KDS
-    let vcek_url: String = match proc_gen {
-        ProcessorGeneration::Turin => {
-            let fmc = if let Some(fmc) = att_report.reported_tcb.fmc {
-                fmc
-            } else {
-                bail!("A Turin processor must have a fmc value");
-            };
-            format!(
-                "{KDS_CERT_SITE}{KDS_VCEK}/{}/\
-                {hw_id}?fmcSPL={:02}&blSPL={:02}&teeSPL={:02}&snpSPL={:02}&ucodeSPL={:02}",
-                proc_gen,
-                fmc,
-                att_report.reported_tcb.bootloader,
-                att_report.reported_tcb.tee,
-                att_report.reported_tcb.snp,
-                att_report.reported_tcb.microcode
-            )
-        }
-        _ => {
-            format!(
-                "{KDS_CERT_SITE}{KDS_VCEK}/{}/\
-                {hw_id}?blSPL={:02}&teeSPL={:02}&snpSPL={:02}&ucodeSPL={:02}",
-                proc_gen,
-                att_report.reported_tcb.bootloader,
-                att_report.reported_tcb.tee,
-                att_report.reported_tcb.snp,
-                att_report.reported_tcb.microcode
-            )
-        }
-    };
-    // VCEK in DER format
-    let vcek_rsp: ReqwestResponse = get(vcek_url.clone())
-        .await
-        .context("Unable to send request for VCEK")?;
-
-    match vcek_rsp.status() {
-        StatusCode::OK => {
-            let vcek_rsp_bytes: Vec<u8> = vcek_rsp
-                .bytes()
-                .await
-                .context("Unable to parse VCEK")?
-                .to_vec();
-            Ok(vcek_rsp_bytes)
-        }
-
-        status => bail!("Unable to fetch VCEK from URL: {status:?}, {vcek_url:?}"),
-    }
-}
-
 /// Determines the processor model based on the family and model IDs from the attestation report.
 fn get_processor_generation(att_report: &AttestationReport) -> Result<ProcessorGeneration> {
     let cpu_fam = att_report
@@ -584,6 +668,7 @@ fn get_processor_generation(att_report: &AttestationReport) -> Result<ProcessorG
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sev::parser::ByteParser;
 
     const VCEK: &[u8; 1360] = include_bytes!("../../test_data/snp/test-vcek.der");
     const VCEK_LEGACY: &[u8; 1361] =

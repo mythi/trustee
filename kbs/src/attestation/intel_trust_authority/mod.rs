@@ -10,7 +10,7 @@ use anyhow::*;
 use async_trait::async_trait;
 use az_cvm_vtpm::hcl::HclReport;
 use base64::{engine::general_purpose::STANDARD, Engine};
-use derivative::Derivative;
+use educe::Educe;
 use kbs_types::{Challenge, HashAlgorithm, Tee};
 use reqwest::header::{ACCEPT, CONTENT_TYPE, USER_AGENT};
 use serde::{Deserialize, Serialize};
@@ -83,14 +83,15 @@ struct ErrorResponse {
     error: String,
 }
 
-#[derive(Clone, Derivative, Deserialize, PartialEq, Default)]
-#[derivative(Debug)]
+#[derive(Clone, Educe, Deserialize, PartialEq, Default)]
+#[educe(Debug)]
 pub struct IntelTrustAuthorityConfig {
     pub base_url: String,
-    #[derivative(Debug = "ignore")]
+    #[educe(Debug(ignore))]
     pub api_key: String,
     pub certs_file: String,
     pub allow_unmatched_policy: Option<bool>,
+    #[serde(default)]
     pub policy_ids: Vec<String>,
 }
 
@@ -190,7 +191,6 @@ impl Attest for IntelTrustAuthority {
                     let runtime_data_hash =
                         Sha512::digest(independent_evidence.runtime_data.to_string()).to_vec();
                     nvgpu.gpu_nonce = hex::encode(&runtime_data_hash[0..32]);
-                    nvgpu.evidence = STANDARD.encode(nvgpu.evidence);
 
                     req_data.nvgpu = Some(nvgpu);
                 }

@@ -1,28 +1,24 @@
 # Use UBI to build.
-FROM registry.access.redhat.com/ubi9/ubi:9.5 as builder
+FROM registry.access.redhat.com/ubi10:10.1-1769521623 as builder
 ARG ALIYUN=false
 
+RUN if [[ -n "${ACTIVATION_KEY}" && -n "${ORG_ID}" ]]; then \
+    rm -f /etc/rhsm-host && rm -f /etc/pki/entitlement-host; \
+    subscription-manager register --org=${ORG_ID} --activationkey=${ACTIVATION_KEY}; \
+    fi
+
 # Install build dependencies from CentOS or RHEL repos.
-RUN \
-# Update packages. Get CVE fixes sooner.
-dnf -y update && \
-# Enable additional repositories for CentOS or RHEL.
-#if command -v subscription-manager; then \
-#  REPO_ARCH=$(uname -m) && \
-#  subscription-manager register --org "$(cat /activation-key/org)" --activationkey "$(cat /activation-key/activationkey)" && \
-#  subscription-manager repos --enable rhel-9-for-${REPO_ARCH}-appstream-rpms --enable codeready-builder-for-rhel-9-${REPO_ARCH}-rpms; \
-#else \
-#  dnf -y install 'dnf-command(config-manager)' && dnf config-manager --enable crb; \
-#fi && \
-# Install packages.
-dnf -y --setopt=install_weak_deps=0 install \
-  cargo pkg-config perl-FindBin openssl-devel perl-lib perl-IPC-Cmd perl-File-Compare perl-File-Copy clang-devel \
-  rust gcc gcc-c++ \ 
-  cmake glibc-static perl device-mapper-devel \
-  # These two are only available in the CodeReady Builder repo.
-  tpm2-tss-devel protobuf-compiler \
-  # This one is needed to build the stub.
-  meson
+
+RUN subscription-manager repos --enable codeready-builder-for-rhel-9-${ARCH/amd64/x86_64}-rpms; \
+  dnf -y update && \
+  dnf -y --setopt=install_weak_deps=0 install \
+    cargo pkg-config perl-FindBin openssl-devel perl-lib perl-IPC-Cmd perl-File-Compare perl-File-Copy clang-devel \
+    rust gcc gcc-c++ \
+    cmake glibc-static perl device-mapper-devel \
+    tpm2-tss-devel \
+    protobuf-compiler \
+    # This is needed to build the stub.
+    meson
 
 # Build.
 WORKDIR /usr/src/kbs
@@ -37,8 +33,12 @@ meson install -C build && \
 popd
 
 # Build KBS.
+ENV OPENSSL_NO_VENDOR=1
+# RUN ARCH=$(uname -m) && \
+# if [ ${ARCH} = "s390x" ]; then \
+#  export OPENSSL_NO_VENDOR=1; \
+# fi && \
 RUN ARCH=$(uname -m) && \
-export OPENSSL_NO_VENDOR=1; \
 pushd kbs && make AS_FEATURE=coco-as-builtin ALIYUN=${ALIYUN} ARCH=${ARCH} && make ARCH=${ARCH} install-kbs && popd
 
 
@@ -51,7 +51,7 @@ RUN if [ $(uname -m) = "x86_64" ]; then \
 fi
 
 # Package UBI image.
-FROM registry.access.redhat.com/ubi9
+FROM registry.access.redhat.com/ubi10:10.1-1769521623
 
 # Update packages. Get CVE fixes sooner.
 RUN dnf -y update && dnf clean all

@@ -4,11 +4,10 @@
 //! - `rvps-grpc`: The AS will connect a remote RVPS.
 
 pub mod config;
+pub mod ear_token;
 pub mod policy_engine;
 pub mod rvps;
-pub mod token;
-
-use crate::token::AttestationTokenBroker;
+use crate::rvps::RvpsClient;
 
 use canon_json::CanonicalFormatter;
 pub use kbs_types::{Attestation, HashAlgorithm, Tee};
@@ -16,13 +15,15 @@ pub use serde_json::Value;
 
 use anyhow::{anyhow, bail, Context, Result};
 use config::Config;
-use log::{debug, info};
-use rvps::{RvpsApi, RvpsError};
+use rvps::RvpsError;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use thiserror::Error;
 use tokio::fs;
+use tracing::{debug, info};
 use verifier::{InitDataHash, ReportData, TeeEvidenceParsedClaim};
+
+use crate::ear_token::EarAttestationTokenBroker;
 
 fn serialize_canon_json<T: Serialize>(value: T) -> Result<Vec<u8>> {
     let mut buf = Vec::new();
@@ -36,7 +37,7 @@ pub type TeeClass = String;
 
 /// Tee Claims are the output of the verifier plus some metadata
 /// that identifies the TEE type and class.
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct TeeClaims {
     tee: Tee,
     tee_class: TeeClass,
@@ -121,9 +122,9 @@ pub struct VerificationRequest {
 }
 
 pub struct AttestationService {
-    _config: Config,
-    rvps: Box<dyn RvpsApi + Send + Sync>,
-    token_broker: Box<dyn AttestationTokenBroker + Send + Sync>,
+    config: Config,
+    rvps: RvpsClient,
+    token_broker: EarAttestationTokenBroker,
 }
 
 impl AttestationService {
@@ -139,10 +140,11 @@ impl AttestationService {
             .await
             .map_err(ServiceError::Rvps)?;
 
-        let token_broker = config.attestation_token_broker.to_token_broker().await?;
+        let token_broker =
+            EarAttestationTokenBroker::new(config.attestation_token_broker.clone()).await?;
 
         Ok(Self {
-            _config: config,
+            config,
             rvps,
             token_broker,
         })
@@ -188,7 +190,11 @@ impl AttestationService {
         }
 
         for verification_request in verification_requests {
-            let verifier = verifier::to_verifier(&verification_request.tee)?;
+            let verifier = verifier::to_verifier(
+                &verification_request.tee,
+                self.config.clone().verifier_config,
+            )
+            .await?;
 
             let (report_data, runtime_data_claims) = parse_runtime_data(
                 verification_request.runtime_data,
@@ -214,12 +220,19 @@ impl AttestationService {
                 .await
                 .map_err(|e| anyhow!("Verifier evaluate failed: {e:?}"))?;
 
-            info!(
-                "{:?} Verifier/endorsement check passed.",
-                verification_request.tee
-            );
-
             for (claims_from_tee_evidence, tee_class) in claims {
+                info!(
+                    tee =? verification_request.tee,
+                    tee_class = tee_class,
+                    "Verifier/endorsement check passed.",
+                );
+
+                debug!(
+                    "claims = {}, initdata claims = {}, runtime claims = {}",
+                    serde_json::to_string(&claims_from_tee_evidence)?,
+                    serde_json::to_string(&init_data_claims)?,
+                    serde_json::to_string(&runtime_data_claims)?,
+                );
                 tee_claims.push(TeeClaims {
                     tee: verification_request.tee,
                     tee_class,
@@ -230,16 +243,9 @@ impl AttestationService {
             }
         }
 
-        let reference_data_map = self
-            .rvps
-            .get_digests()
-            .await
-            .map_err(|e| anyhow!("Generate reference data failed: {:?}", e))?;
-        debug!("reference_data_map: {:#?}", reference_data_map);
-
         let attestation_results_token = self
             .token_broker
-            .issue(tee_claims, policy_ids, reference_data_map)
+            .issue(tee_claims, policy_ids, Some(self.rvps.clone()))
             .await?;
         Ok(attestation_results_token)
     }
@@ -247,15 +253,19 @@ impl AttestationService {
     /// Register a new reference value
     pub async fn register_reference_value(&mut self, message: &str) -> Result<()> {
         self.rvps
+            .lock()
+            .await
             .verify_and_extract(message)
             .await
             .context("register reference value")
     }
 
     /// Query Reference Values
-    pub async fn query_reference_values(&self) -> Result<HashMap<String, Value>> {
+    pub async fn query_reference_value(&self, reference_value_id: &str) -> Result<Option<Value>> {
         self.rvps
-            .get_digests()
+            .lock()
+            .await
+            .query_reference_value(reference_value_id)
             .await
             .context("query reference values")
     }
@@ -265,7 +275,7 @@ impl AttestationService {
         tee: Tee,
         tee_parameters: String,
     ) -> Result<String> {
-        let verifier = verifier::to_verifier(&tee)?;
+        let verifier = verifier::to_verifier(&tee, self.config.clone().verifier_config).await?;
         verifier
             .generate_supplemental_challenge(tee_parameters)
             .await
@@ -303,12 +313,53 @@ fn parse_init_data(data: Option<InitDataInput>) -> Result<(Option<Vec<u8>>, Valu
                 let initdata = toml::from_str::<Initdata>(&structured)
                     .context("parse TOML structured data")?;
                 let digest = initdata.algorithm.digest(&structured.into_bytes());
-                let claims = serde_json::to_value(initdata.data)?;
+
+                let mut claims = serde_json::to_value(initdata.data)?;
+
+                // Transform certain claims from toml to json if they exist and are toml.
+                if let Value::Object(ref mut map) = claims {
+                    for key in ["cdh.toml", "aa.toml"] {
+                        if let Some(Value::String(toml_str)) = map.get(key).cloned() {
+                            if let Ok(toml_value) = toml::from_str::<toml::Value>(&toml_str) {
+                                if let Ok(json_value) = serde_json::to_value(toml_value) {
+                                    map.insert(key.to_string(), json_value);
+                                }
+                            }
+                        }
+                    }
+
+                    // If there is a policy rego file, replace the full policy file
+                    // with some claims extracted from the file.
+                    if let Some(Value::String(rego_str)) = map.get("policy.rego").cloned() {
+                        if let Some(policy_data) = extract_policy_data(&rego_str) {
+                            // Since we found some policy claims, remove the original
+                            // policy rego from the claims.
+                            map.remove("policy.rego");
+                            map.insert("agent_policy_claims".to_string(), policy_data);
+                        }
+                    }
+                }
                 Ok((Some(digest), claims))
             }
         },
         None => Ok((None, Value::Null)),
     }
+}
+
+/// Extract the 'policy_data' JSON from a rego policy file.
+/// Ideally the runtime will separate the policy and the
+/// policy data. Until then, do this workaround.
+///
+/// Assume that the policy_data is the last thing in the rego file.
+fn extract_policy_data(rego_content: &str) -> Option<Value> {
+    // Find where policy_data is declared.
+    let start_pattern = "policy_data := {";
+    let start_idx = rego_content.find(start_pattern)?;
+
+    let json_start = start_idx + start_pattern.len() - 1;
+    let json_str = &rego_content[json_start..];
+
+    serde_json::from_str(json_str).ok()
 }
 
 #[cfg(test)]

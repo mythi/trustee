@@ -13,7 +13,6 @@ work_dir = "./work/attestation-service"
 policy_engine = "opa"
 
 [attestation_service.attestation_token_broker]
-type = "Ear"
 duration_min = 5
 policy_dir = "./work/attestation-service/token/ear/policies"
 
@@ -28,11 +27,19 @@ type = "BuiltIn"
 type = "LocalFs"
 file_path = "./work/attestation-service/reference_values"
 
+[attestation_service.verifier_config.tpm_verifier]
+trusted_ak_keys_dir = "./work/attestation-service/tpm_trusted_keys"
+max_trusted_ak_keys = 100
+
 [policy_engine]
 policy_path = "./work/kbs-policy.rego"
 
 [admin]
-auth_public_key = "./work/kbs.pem"
+type = "Simple"
+
+[[admin.personas]]
+id = "admin"
+public_key_path = "./work/kbs.pem"
 
 [[plugins]]
 name = "resource"

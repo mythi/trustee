@@ -87,19 +87,13 @@ When `type` is set to `coco_as_builtin`, the following properties can be set.
 | `work_dir`                 | String                      | The location for Attestation Service to store data.      | First try from env `AS_WORK_DIR`. If no this env, then use `/opt/confidential-containers/attestation-service` |
 | `policy_engine`            | String                      | Policy engine type. Valid values: `opa`                  | `opa`                                                                                                         |
 | `rvps_config`              | [RVPSConfiguration][2]      | RVPS configuration                                       | See [RVPSConfiguration][2]                                                                                    |
-| `attestation_token_broker` | [AttestationTokenConfig][1] | Attestation result token configuration.                  | See [AttestationTokenConfig][1]                                                                               |
+| `attestation_token_broker` | [AttestationTokenBroker][1] | Attestation result token configuration.                  | See [AttestationTokenBroker][1]                                                                               |
 
 [1]: #attestationtokenbroker
 
 [2]: #rvps-configuration
 
 ##### AttestationTokenBroker
-
-| Property | Type   | Description                                                                  | Required | Default |
-|----------|--------|------------------------------------------------------------------------------|----------|---------|
-| `type`   | String | Type of token to issue (`Ear` or `Simple` (will be deprecated in `v0.15.0`)) | No       | `Ear`   |
-
-When `type` field is set to `Ear`, the following extra properties can be set:
 
 | Property         | Type                   | Description                                                                    | Required | Default                                                               |
 |------------------|------------------------|--------------------------------------------------------------------------------|----------|-----------------------------------------------------------------------|
@@ -108,19 +102,8 @@ When `type` field is set to `Ear`, the following extra properties can be set:
 | `developer_name` | String                 | The developer name to be used as part of the Verifier ID in the EAR            | No       | `https://confidentialcontainers.org`                                  |
 | `build_name`     | String                 | The build name to be used as part of the Verifier ID in the EAR                | No       | Automatically generated from Cargo package and AS version             |
 | `profile_name`   | String                 | The Profile that describes the EAR token                                       | No       | tag:github.com,2024:confidential-containers/Trustee`                  |
-| `policy_dir`     | String                 | The path to the work directory that contains policies to provision the tokens. | No       | `/opt/confidential-containers/attestation-service/token/ear/policies` |
+| `policy_dir`     | String                 | The path to the work directory that contains policies to provision the tokens. | No       | `/opt/confidential-containers/attestation-service/token/policies` |
 | `signer`         | [TokenSignerConfig][1] | Signing material of the attestation result token.                              | No       | None                                                                  |
-
-[1]: #tokensignerconfig
-
-When `type` field is set to `Simple`, the following extra properties can be set:
-
-| Property       | Type                   | Description                                                                    | Required | Default                                                                   |
-|----------------|------------------------|--------------------------------------------------------------------------------|----------|---------------------------------------------------------------------------|
-| `duration_min` | Integer                | Duration of the attestation result token in minutes.                           | No       | `5`                                                                       |
-| `issuer_name`  | String                 | Issure name of the attestation result token.                                   | No       | `CoCo-Attestation-Service`                                                |
-| `policy_dir`   | String                 | The path to the work directory that contains policies to provision the tokens. | No       | `/opt/confidential-containers/attestation-service/token//simple/policies` |
-| `signer`       | [TokenSignerConfig][1] | Signing material of the attestation result token.                              | No       | None                                                                      |
 
 [1]: #tokensignerconfig
 
@@ -203,12 +186,23 @@ Detailed [documentation](https://docs.trustauthority.intel.com).
 
 ### Admin API Configuration
 
-The following properties can be set under the `[admin]` section.
+Multiple Admin backends are available. These control access to admin endpoints such as `set_policy`.
+Today, the available backends are `DenyAll` (disables admin endpoints), `InsecureAllowAll` (for debugging)
+and `Simple`.
+By default, the simple backend will be used, but no personas will be enabled.
+Use the `type` field to set the admin backend.
 
 | Property          | Type    | Description                                                       | Required | Default |
 |-------------------|---------|-------------------------------------------------------------------|----------|---------|
-| `auth_public_key` | String  | Path to the public key used to authenticate the admin APIs        | No       | None    |
-| `insecure_api`    | Boolean | Whether KBS will not verify the public key when called admin APIs | No       | `false` |
+| `type`            | String  | The backend used to validate admiin requests.                     | No       | Simple  |
+
+If the `Simple` backend is used, a list of admin personas can be provided, each with the following properties:
+
+| Property          | Type    | Description                                                       | Required | Default |
+|-------------------|---------|-------------------------------------------------------------------|----------|---------|
+| `id`              | String  | A string used to identify the admin.                              | Yes      | Simple  |
+| `public_key_path` | String  | The path to the public key corresponding to the admin token.      | Yes      | Simple  |
+
 
 ### Policy Engine Configuration
 
@@ -313,7 +307,7 @@ sockets = ["0.0.0.0:8080"]
 insecure_http = true
 
 [admin]
-insecure_api = true
+type = "InsecureAllowAll"
 
 [attestation_token]
 
@@ -323,7 +317,6 @@ work_dir = "/opt/confidential-containers/attestation-service"
 policy_engine = "opa"
 
 [attestation_service.attestation_token_broker]
-type = "Ear"
 duration_min = 5
 
 [attestation_service.rvps_config]
@@ -345,7 +338,7 @@ Using a remote CoCo AS:
 insecure_http = true
 
 [admin]
-insecure_api = true
+type = "InsecureAllowAll"
 
 [attestation_service]
 type = "coco_as_grpc"
@@ -378,8 +371,11 @@ certs_file = "https://portal.trustauthority.intel.com"
 allow_unmatched_policy = true
 
 [admin]
-auth_public_key = "/etc/kbs-admin.pub"
-insecure_api = false
+type = "Simple"
+
+[[admin.personas]]
+id = "admin"
+public_key_path = "/etc/kbs-admin.pub"
 
 [policy_engine]
 policy_path = "/etc/kbs-policy.rego"
@@ -398,7 +394,7 @@ sockets = ["0.0.0.0:8080"]
 insecure_http = true
 
 [admin]
-insecure_api = true
+type = "InsecureAllowAll"
 
 [attestation_token]
 
@@ -408,7 +404,6 @@ work_dir = "/opt/confidential-containers/attestation-service"
 policy_engine = "opa"
 
 [attestation_service.attestation_token_broker]
-type = "Ear"
 duration_min = 5
 
 [attestation_service.rvps_config]
@@ -439,7 +434,11 @@ sockets = ["127.0.0.1:50002"]
 insecure_http = true
 
 [admin]
-auth_public_key = "./work/kbs.pem"
+type = "InsecureAllowAll"
+
+[[admin.personas]]
+id = "admin"
+public_key_path = "./work/kbs.pem"
 
 [attestation_token]
 trusted_certs_paths = ["./work/ca-cert.pem"]
