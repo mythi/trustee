@@ -269,6 +269,9 @@ hardware := 2 if {
 
 	# Check OVMF code hash.
 	input.az_tdx_vtpm.quote.body.mr_td in query_reference_value("mr_td")
+
+	# Check TCB status
+	input.az_tdx_vtpm.tcb_status == "UpToDate"
 }
 
 configuration := 2 if {
