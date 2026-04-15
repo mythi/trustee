@@ -599,6 +599,7 @@ dependencies = [
  "jsonwebtoken",
  "kbs-types",
  "key-value-storage",
+ "mobc",
  "openssl",
  "policy-engine",
  "prost",
