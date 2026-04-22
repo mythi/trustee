@@ -18,8 +18,8 @@ all-verifier = [
     "nvidia-verifier",
     "tpm-verifier",
 ]
-tdx-verifier = ["eventlog", "scroll", "intel-tee-quote-verification-rs"]
-sgx-verifier = ["scroll", "intel-tee-quote-verification-rs"]
+tdx-verifier = ["eventlog", "scroll", "intel-tee-quote-verification-rs", "asn1-rs", "x509-parser"]
+sgx-verifier = ["scroll", "intel-tee-quote-verification-rs", "asn1-rs", "x509-parser"]
 az-snp-vtpm-verifier = [
     "az-snp-vtpm",
     "serde_with",

@@ -18,6 +18,8 @@ use tracing::{debug, warn};
 
 mod claims;
 mod error;
+#[cfg(any(feature = "tdx-verifier", feature = "sgx-verifier"))]
+pub(crate) mod pck;
 
 const INTEL_PCS_URL: &str = "https://api.trustedservices.intel.com/sgx/certification/v4/";
 
