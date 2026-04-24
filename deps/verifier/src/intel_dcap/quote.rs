@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+#[cfg(feature = "ring")]
+use crate::intel_dcap::crypto;
 use anyhow::{anyhow, bail, Context, Result};
 use core::fmt;
 use scroll::Pread;
@@ -61,33 +63,33 @@ impl fmt::Display for QuoteHeader {
 
 #[repr(C)]
 #[derive(Debug, Pread)]
-struct QuoteSignature {
-    sig_r: [u8; 32],
-    sig_s: [u8; 32],
-    pkey_x_coord: [u8; 32],
-    pkey_y_coord: [u8; 32],
+pub(crate) struct QuoteSignature {
+    pub(crate) sig_r: [u8; 32],
+    pub(crate) sig_s: [u8; 32],
+    pub(crate) pkey_x_coord: [u8; 32],
+    pub(crate) pkey_y_coord: [u8; 32],
 }
 
 #[repr(C)]
 #[derive(Debug, Pread)]
-struct QeReport {
-    report: [u8; std::mem::size_of::<SgxReportBody>()],
-    sig_r: [u8; 32],
-    sig_s: [u8; 32],
+pub(crate) struct QeReport {
+    pub(crate) report: [u8; std::mem::size_of::<SgxReportBody>()],
+    pub(crate) sig_r: [u8; 32],
+    pub(crate) sig_s: [u8; 32],
 }
 
 #[repr(C)]
 #[derive(Debug)]
 pub(crate) struct QeCertificationData<'a> {
-    qe_report: QeReport,
-    qe_authentication: &'a [u8],
+    pub(crate) qe_report: QeReport,
+    pub(crate) qe_authentication: &'a [u8],
     pub(crate) certificates: &'a [u8],
 }
 
 #[repr(C)]
 #[derive(Debug)]
 pub(crate) struct QuoteCertificationData<'a> {
-    quote_signature: QuoteSignature,
+    pub(crate) quote_signature: QuoteSignature,
     pub(crate) qe_certification_data: QeCertificationData<'a>,
 }
 
@@ -387,6 +389,11 @@ pub(crate) enum Quote<'a> {
         header: QuoteHeader,
         body: SgxReportBody,
         cert_data: QuoteCertificationData<'a>,
+        /// Length of the header+body prefix that the quote's own AK
+        /// signature covers, i.e. the offset at which `cert_data` starts.
+        /// Set once at parse time, from the same offset used to locate
+        /// `cert_data` in the raw bytes — see [`signed_data`](Quote::signed_data).
+        signed_len: usize,
     },
 
     /// TD Quote v4 (tee_type = 0x00000081)
@@ -396,6 +403,7 @@ pub(crate) enum Quote<'a> {
         header: QuoteHeader,
         body: TdxReportBody,
         cert_data: QuoteCertificationData<'a>,
+        signed_len: usize,
     },
 
     /// TD Quote v5 (tee_type = 0x00000081)
@@ -404,9 +412,9 @@ pub(crate) enum Quote<'a> {
     V5 {
         header: QuoteHeader,
         r#type: QuoteV5Type,
-        size: [u8; 4],
         body: QuoteV5Body,
         cert_data: QuoteCertificationData<'a>,
+        signed_len: usize,
     },
 }
 
@@ -426,6 +434,95 @@ impl<'a> Quote<'a> {
             Quote::V5 { header, .. } => header.tee_type,
         }
     }
+
+    pub(crate) fn tcb_svn(&self) -> &[u8; 16] {
+        match self {
+            Quote::V4 { body, .. } => &body.tcb_svn,
+            Quote::V5 { body, .. } => match body {
+                QuoteV5Body::Tdx10(body) => &body.tcb_svn,
+                QuoteV5Body::Tdx15(body) => &body.tcb_svn,
+            },
+            Quote::V3 { body, .. } => &body.cpu_svn,
+        }
+    }
+
+    /// The second TEE TCB SVN array, present only on TD Report v1.5 (quote v5, TDX15 body).
+    pub(crate) fn tee_tcb_svn2(&self) -> Option<&[u8; 16]> {
+        match self {
+            Quote::V5 {
+                body: QuoteV5Body::Tdx15(body),
+                ..
+            } => Some(&body.tee_tcb_svn2),
+            _ => None,
+        }
+    }
+
+    /// The SEAM module signer measurement (`mrsignerSeam`), present only on TDX report bodies.
+    pub(crate) fn mrsigner_seam(&self) -> Option<&[u8; 48]> {
+        match self {
+            Quote::V3 { .. } => None,
+            Quote::V4 { body, .. } => Some(&body.mrsigner_seam),
+            Quote::V5 { body, .. } => match body {
+                QuoteV5Body::Tdx10(body) => Some(&body.mrsigner_seam),
+                QuoteV5Body::Tdx15(body) => Some(&body.mrsigner_seam),
+            },
+        }
+    }
+
+    /// The SEAM module attributes (`seamAttributes`), present only on TDX report bodies.
+    pub(crate) fn seam_attributes(&self) -> Option<&[u8; 8]> {
+        match self {
+            Quote::V3 { .. } => None,
+            Quote::V4 { body, .. } => Some(&body.seam_attributes),
+            Quote::V5 { body, .. } => match body {
+                QuoteV5Body::Tdx10(body) => Some(&body.seam_attributes),
+                QuoteV5Body::Tdx15(body) => Some(&body.seam_attributes),
+            },
+        }
+    }
+
+    pub(crate) fn signed_data<'b>(&self, quote_bin: &'b [u8]) -> Result<&'b [u8]> {
+        let signed_len = match self {
+            Quote::V3 { signed_len, .. } => *signed_len,
+            Quote::V4 { signed_len, .. } => *signed_len,
+            Quote::V5 { signed_len, .. } => *signed_len,
+        };
+        quote_bin
+            .get(..signed_len)
+            .context("quote too short for signed data")
+    }
+
+    /// Verifies the quote's own AK (attestation key) ECDSA-P256 signature
+    /// over its signed bytes, against the public key embedded in the quote
+    /// itself (not a certificate).
+    #[cfg(feature = "ring")]
+    pub(crate) fn verify_ak_signature(&self, quote_bin: &[u8]) -> Result<bool> {
+        let sig = &self.cert_data().quote_signature;
+        crypto::ecdsa_p256_verify(
+            self.signed_data(quote_bin)?,
+            &sig.sig_r,
+            &sig.sig_s,
+            &sig.pkey_x_coord,
+            &sig.pkey_y_coord,
+        )
+    }
+
+    /// `true` if the QE report's `report_data` commits to this quote's AK
+    /// public key and QE authentication data:
+    /// `report_data == sha256(pkey_x || pkey_y || qe_authentication) || 32×0x00`.
+    #[cfg(feature = "ring")]
+    pub(crate) fn verify_qe_report_data_binding(&self, report_data: &[u8; 64]) -> bool {
+        let qe = self.cert_data();
+        let mut expected = [0u8; 64];
+        let mut message =
+            Vec::with_capacity(64 + qe.qe_certification_data.qe_authentication.len());
+        message.extend_from_slice(&qe.quote_signature.pkey_x_coord);
+        message.extend_from_slice(&qe.quote_signature.pkey_y_coord);
+        message.extend_from_slice(qe.qe_certification_data.qe_authentication);
+        expected[..32].copy_from_slice(&crypto::sha256(&message));
+        &expected == report_data
+    }
+
 }
 
 impl fmt::Display for Quote<'_> {
@@ -436,14 +533,9 @@ impl fmt::Display for Quote<'_> {
             Quote::V5 {
                 header,
                 r#type,
-                size,
                 body,
                 ..
-            } => write!(
-                f,
-                "TDX Quote (V5):\n{header}\n{type}\n{}\n{body}\n",
-                hex::encode(size)
-            ),
+            } => write!(f, "TDX Quote (V5):\n{header}\n{type}\n{body}\n"),
         }
     }
 }
@@ -553,30 +645,26 @@ pub(crate) fn parse_quote(quote_bin: &[u8]) -> Result<Quote<'_>> {
             let body = quote_bin
                 .pread::<SgxReportBody>(size_of::<QuoteHeader>())
                 .context("parse SGX quote body failed")?;
-            let cert_data = parse_cert_data_at(
-                quote_bin,
-                size_of::<QuoteHeader>() + size_of::<SgxReportBody>(),
-                true,
-            )?;
+            let signed_len = size_of::<QuoteHeader>() + size_of::<SgxReportBody>();
+            let cert_data = parse_cert_data_at(quote_bin, signed_len, true)?;
             Ok(Quote::V3 {
                 header,
                 body,
                 cert_data,
+                signed_len,
             })
         }
         (4, TEE_TYPE_TDX) => {
             let body = quote_bin
                 .pread::<TdxReportBody>(size_of::<QuoteHeader>())
                 .context("parse TDX quote v4 body failed")?;
-            let cert_data = parse_cert_data_at(
-                quote_bin,
-                size_of::<QuoteHeader>() + size_of::<TdxReportBody>(),
-                false,
-            )?;
+            let signed_len = size_of::<QuoteHeader>() + size_of::<TdxReportBody>();
+            let cert_data = parse_cert_data_at(quote_bin, signed_len, false)?;
             Ok(Quote::V4 {
                 header,
                 body,
                 cert_data,
+                signed_len,
             })
         }
         (5, TEE_TYPE_TDX) => {
@@ -604,13 +692,30 @@ pub(crate) fn parse_quote(quote_bin: &[u8]) -> Result<Quote<'_>> {
                     (QuoteV5Body::Tdx15(body), size_of::<TdxReportBodyV15>())
                 }
             };
-            let cert_data = parse_cert_data_at(quote_bin, offset + body_size, false)?;
+            // Cross-check the wire's declared body size (`sgx_quote_5.h`'s
+            // `size` field, needed since `body` is a C flexible-array member
+            // on the wire) against `sizeof(<struct for type>)`, which is
+            // what actually determines how many bytes we parse as the body
+            // — the reference QvE implementation never reads this field
+            // either, it always trusts `sizeof(<struct for type>)`. A
+            // mismatch means either a corrupted quote or a body format we
+            // don't understand; silently trusting `body_size` in that case
+            // would misalign `signed_len`/`cert_data`.
+            let declared_size = u32::from_le_bytes(size) as usize;
+            if declared_size != body_size {
+                bail!(
+                    "TDX quote v5 declared body size ({declared_size}) does not match \
+                     the {body_size}-byte body expected for type {type:?}"
+                );
+            }
+            let signed_len = offset + body_size;
+            let cert_data = parse_cert_data_at(quote_bin, signed_len, false)?;
             Ok(Quote::V5 {
                 header,
                 r#type,
-                size,
                 body,
                 cert_data,
+                signed_len,
             })
         }
         (v, t) => bail!("unsupported quote version {v} / tee_type {t:#010x}"),

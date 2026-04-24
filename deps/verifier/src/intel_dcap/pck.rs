@@ -8,13 +8,12 @@
 //! and are present in both TDX and SGX PCK certificate chains.
 //! See "Intel® SGX PCK Certificate and Certificate Revocation List Profile Specification".
 
-use anyhow::{anyhow, bail, Context, Result};
+use crate::intel_dcap::cert::{Cert, CertRole};
+use anyhow::{bail, Context, Result};
 use asn1_rs::{oid, DerSequence, Enumerated, FromDer, Oid};
-use x509_parser::prelude::*;
+use x509_parser::certificate::X509Certificate;
 
 const DCAP_SGX_EXTENSIONS: Oid<'static> = oid!(1.2.840 .113741 .1 .13 .1);
-const PCK_PLATFORM_CA_CN: &str = "Intel SGX PCK Platform CA";
-const PCK_PROCESSOR_CA_CN: &str = "Intel SGX PCK Processor CA";
 
 #[derive(Debug, PartialEq, DerSequence)]
 struct OidAndString<'a> {
@@ -100,7 +99,7 @@ struct SgxExtension<'a> {
     configuration: Option<ConfigSequence<'a>>,
 }
 
-/// Owned platform information extracted from the SGX extensions of a PCK certificate chain.
+/// Owned platform information extracted from the SGX extensions of a PCK certificate.
 ///
 /// SGX extensions are DER-encoded under OID 1.2.840.113741.1.13.1 and present in
 /// both TDX and SGX PCK certificate chains.
@@ -130,68 +129,41 @@ pub(crate) struct PlatformInfo {
     pub smt_enabled: Option<bool>,
 }
 
-/// A parsed PCK certificate chain with named positions.
-/// The Intel cert chain ordering is leaf (index 0), intermediate CA, root CA.
-struct PckCertificateChain {
-    leaf: Pem,
-    intermediate: Pem,
-    _root: Pem,
-}
-
-/// Parse all PEM-encoded certificates from a PCK certificate chain.
-fn parse_pck_pem_certs(pem_certs: &[u8]) -> Result<PckCertificateChain> {
-    let [leaf, intermediate, root] = Pem::iter_from_buffer(pem_certs)
-        .collect::<Result<Vec<Pem>, _>>()
-        .context("failed to parse PCK PEM certificate chain")
-        .and_then(|pems| {
-            pems.try_into().map_err(|v: Vec<Pem>| {
-                anyhow!(
-                    "PCK cert chain must contain exactly 3 certificates (leaf, intermediate CA, root CA), got {}",
-                    v.len()
-                )
-            })
-        })?;
-
-    Ok(PckCertificateChain {
-        leaf,
-        intermediate,
-        _root: root,
-    })
-}
-
-/// Parse the SGX extensions from a PCK certificate chain and return owned platform information.
-///
-/// The CA type is derived from the intermediate cert subject CN, which also determines
-/// which SGX extension fields are present. Absent SGX extensions is an error — PCK
-/// leaf certificates are always expected to carry them.
+/// Parses a PEM-encoded PCK certificate chain (leaf, intermediate CA, root CA)
+/// and extracts the leaf's platform information — a convenience entry point
+/// for callers that don't already have the chain parsed as [`Cert`]s; see
+/// [`Cert::platform_info`] for callers that do.
 pub(crate) fn parse_platform_info(pem_certs: &[u8]) -> Result<PlatformInfo> {
-    let chain = parse_pck_pem_certs(pem_certs)?;
+    let certs = Cert::chain_from_pem(pem_certs, 3)?;
+    let [leaf, intermediate, _root] = certs.as_slice() else {
+        bail!(
+            "PCK cert chain must contain exactly 3 certificates (leaf, intermediate CA, root CA), got {}",
+            certs.len()
+        );
+    };
+    let is_platform_ca = if intermediate.is_common_name(CertRole::PckPlatformCa.common_name()) {
+        true
+    } else if intermediate.is_common_name(CertRole::PckProcessorCa.common_name()) {
+        false
+    } else {
+        bail!(
+            "unexpected PCK intermediate CA CN: {:?}",
+            intermediate.common_name()
+        );
+    };
+    leaf.platform_info(is_platform_ca)
+}
 
-    let intermediate = chain
-        .intermediate
-        .parse_x509()
-        .context("failed to parse PCK intermediate CA cert")?;
-
-    let is_platform_ca = intermediate
-        .subject()
-        .iter_common_name()
-        .next()
-        .context("PCK intermediate CA cert has no Common Name")?
-        .as_str()
-        .context("PCK intermediate CA CN is not valid UTF-8")
-        .and_then(|cn| match cn {
-            PCK_PLATFORM_CA_CN => Ok(true),
-            PCK_PROCESSOR_CA_CN => Ok(false),
-            other => bail!("unexpected PCK intermediate CA CN: {other}"),
-        })?;
-
-    let leaf = chain
-        .leaf
-        .parse_x509()
-        .context("failed to parse PCK leaf cert")?;
-
+/// Extracts platform information from an already-parsed PCK leaf certificate's
+/// SGX extension. `is_platform_ca` should come from the PCK intermediate CA's
+/// already-validated Common Name (Platform CA vs Processor CA); it's cross-checked
+/// here against the leaf's own extension shape — Platform CA-signed certs carry
+/// `platform_instance`/`configuration`, Processor CA-signed certs never do.
+pub(crate) fn extract_platform_info(
+    leaf: &X509Certificate<'_>,
+    is_platform_ca: bool,
+) -> Result<PlatformInfo> {
     let ext = leaf
-        .tbs_certificate
         .get_extension_unique(&DCAP_SGX_EXTENSIONS)
         .context("failed to look up SGX extensions OID")?
         .context("SGX extensions OID not found in PCK leaf cert")?;
@@ -231,7 +203,7 @@ pub(crate) fn parse_platform_info(pem_certs: &[u8]) -> Result<PlatformInfo> {
     let cpusvn: [u8; 16] = tcb.cpusvn.s.try_into().context("cpusvn is not 16 bytes")?;
     let sgx_type = sgx.sgxtype.e.0 as u8;
 
-    // Cross-check: the CA type from the intermediate cert must agree with the presence
+    // Cross-check: the caller-supplied CA type must agree with the presence
     // of platform_instance and configuration in the leaf cert's SGX extensions.
     let (platform_instance_id, dynamic_platform, cached_keys, smt_enabled) = match is_platform_ca {
         true => {

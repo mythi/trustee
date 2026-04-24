@@ -14,13 +14,20 @@ use std::time::{Duration, SystemTime};
 use strum::Display;
 use tracing::{debug, warn};
 
-mod claims;
+#[cfg(feature = "x509-parser")]
+pub(crate) mod cert;
+pub(crate) mod claims;
 pub(crate) mod collateral;
 pub(crate) mod collateral_service;
+#[cfg(feature = "ring")]
+pub(crate) mod crypto;
 mod error;
 pub(crate) mod pck;
 pub(crate) mod pcs;
 pub(crate) mod quote;
+pub(crate) mod tcb_status;
+#[cfg(all(feature = "x509-parser", feature = "ring"))]
+pub(crate) mod verify;
 
 const INTEL_PCS_URL: &str = "https://api.trustedservices.intel.com/sgx/certification/v4/";
 

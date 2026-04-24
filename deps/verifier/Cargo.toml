@@ -22,6 +22,7 @@ tdx-verifier = [
     "eventlog",
     "scroll",
     "intel-tee-quote-verification-rs",
+    "ring",
     "asn1-rs",
     "x509-parser",
     "tokio/fs",
@@ -112,7 +113,8 @@ strum.workspace = true
 veraison-apiclient = { git = "https://github.com/veraison/rust-apiclient", rev = "fe149cd", optional = true }
 ccatoken = { git = "https://github.com/veraison/rust-ccatoken", rev = "870c83f", optional = true }
 ear = { version = "0.5.0", optional = true }
-x509-parser = { version = "0.18.1", optional = true }
+ring = { version = "0.17", features = ["std"], optional = true }
+x509-parser = { version = "0.18.1", features = ["verify"], optional = true }
 reqwest = { workspace = true, features = ["default-tls"] }
 reqwest-middleware = "0.5.1"
 http-cache-reqwest = { version = "1.0.0-alpha.6", default-features = false, features = [

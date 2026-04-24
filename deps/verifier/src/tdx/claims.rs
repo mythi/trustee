@@ -98,7 +98,6 @@ pub fn generate_parsed_claim(
         Quote::V5 {
             header,
             r#type,
-            size,
             body,
             ..
         } => {
@@ -116,7 +115,6 @@ pub fn generate_parsed_claim(
                     QuoteV5Type::TDX15 => 3u16.to_le_bytes(),
                 }
             );
-            parse_claim!(quote_map, "size", &size[..]);
             match body {
                 QuoteV5Body::Tdx10(body) => {
                     parse_claim!(quote_body, "tcb_svn", body.tcb_svn);

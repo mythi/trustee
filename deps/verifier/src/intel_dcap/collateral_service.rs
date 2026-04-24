@@ -74,11 +74,10 @@ pub struct TcbInfo {
 #[derive(Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct TdxModule {
-    #[serde(
-        serialize_with = "hex::serialize_upper",
-        deserialize_with = "hex::deserialize"
-    )]
-    pub mrsigner: Vec<u8>,
+    /// SEAM module signer measurement — 48 bytes (SHA-384-sized), matching
+    /// [`crate::intel_dcap::quote::Quote::mrsigner_seam`]; not 32 bytes like
+    /// [`EnclaveIdentity::mrsigner`].
+    pub mrsigner: HexBytes<48>,
     pub attributes: HexBytes<8>,
     pub attributes_mask: HexBytes<8>,
 }
@@ -87,17 +86,14 @@ pub struct TdxModule {
 #[serde(rename_all = "camelCase")]
 pub struct TdxModuleIdentity {
     pub id: String,
-    #[serde(
-        serialize_with = "hex::serialize_upper",
-        deserialize_with = "hex::deserialize"
-    )]
-    pub mrsigner: Vec<u8>,
+    /// See [`TdxModule::mrsigner`].
+    pub mrsigner: HexBytes<48>,
     pub attributes: HexBytes<8>,
     pub attributes_mask: HexBytes<8>,
     pub tcb_levels: Vec<TcbLevel>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Display)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Display)]
 pub enum TcbStatus {
     UpToDate,
     SWHardeningNeeded,
@@ -106,6 +102,15 @@ pub enum TcbStatus {
     OutOfDate,
     OutOfDateConfigurationNeeded,
     Revoked,
+    /// Not a status ever present in TCB Info/QE Identity/TDX Module Identity JSON;
+    /// only ever produced by the TD relaunch check as a converged `tcb_status`.
+    #[serde(skip)]
+    #[strum(serialize = "TDRelaunchAdvised")]
+    TdRelaunchAdvised,
+    /// See [`TcbStatus::TdRelaunchAdvised`].
+    #[serde(skip)]
+    #[strum(serialize = "TDRelaunchAdvisedConfigurationNeeded")]
+    TdRelaunchAdvisedConfigurationNeeded,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -285,6 +290,7 @@ pub enum PckCaType {
 
 /// The collateral fetched from a `CollateralService`: the response body and an optional
 /// PEM-encoded certificate chain extracted from the response headers.
+#[derive(Clone)]
 pub struct CollateralData {
     pub body: Vec<u8>,
     pub cert_chain: Option<Vec<u8>>,
