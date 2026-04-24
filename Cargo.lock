@@ -8859,6 +8859,7 @@ dependencies = [
  "p384 0.14.0",
  "reqwest 0.13.5",
  "reqwest-middleware",
+ "ring",
  "rstest",
  "s390_pv",
  "scroll",

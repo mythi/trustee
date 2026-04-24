@@ -151,7 +151,7 @@ fn get_sa_list(sa_list: &[c_char; 450]) -> Value {
         .collect()
 }
 
-fn format_rfc3339(timestamp: i64) -> anyhow::Result<String> {
+pub(crate) fn format_rfc3339(timestamp: i64) -> anyhow::Result<String> {
     OffsetDateTime::from_unix_timestamp(timestamp)
         .with_context(|| format!("invalid or out-of-range unix timestamp: {timestamp}"))?
         .format(&Rfc3339)
