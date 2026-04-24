@@ -12,88 +12,96 @@ use anyhow::{Context, Result};
 use asn1_rs::{oid, DerSequence, Enumerated, FromDer, Oid};
 use x509_parser::prelude::*;
 
-const DCAP_SGX_EXTENSIONS: Oid<'static> = oid!(1.2.840 .113741 .1 .13 .1);
+pub(crate) const DCAP_SGX_EXTENSIONS: Oid<'static> = oid!(1.2.840 .113741 .1 .13 .1);
 
 #[derive(Debug, PartialEq, DerSequence)]
-struct OidAndString<'a> {
-    id: Oid<'a>,
-    s: &'a [u8],
+pub(crate) struct OidAndString<'a> {
+    pub(crate) id: Oid<'a>,
+    pub(crate) s: &'a [u8],
 }
 
 #[derive(Debug, PartialEq, DerSequence)]
-struct OidAndInt<'a> {
-    id: Oid<'a>,
-    val: u8,
+pub(crate) struct OidAndInt<'a> {
+    pub(crate) id: Oid<'a>,
+    pub(crate) val: u8,
 }
 
 #[derive(Debug, PartialEq, DerSequence)]
-struct OidAndInt16<'a> {
-    id: Oid<'a>,
-    val: u16,
+pub(crate) struct OidAndInt16<'a> {
+    pub(crate) id: Oid<'a>,
+    pub(crate) val: u16,
 }
 
 #[derive(Debug, PartialEq, DerSequence)]
-struct OidAndEnum<'a> {
-    id: Oid<'a>,
-    e: Enumerated,
+pub(crate) struct OidAndEnum<'a> {
+    pub(crate) id: Oid<'a>,
+    pub(crate) e: Enumerated,
 }
 
 #[derive(Debug, PartialEq, DerSequence)]
-struct OidAndBool<'a> {
-    id: Oid<'a>,
-    b: bool,
+pub(crate) struct OidAndBool<'a> {
+    pub(crate) id: Oid<'a>,
+    pub(crate) b: bool,
 }
 
 #[derive(Debug, PartialEq, DerSequence)]
-struct PlatformConfig<'a> {
-    dynamic_platform: OidAndBool<'a>,
-    cached_keys: OidAndBool<'a>,
-    smt_enabled: OidAndBool<'a>,
+pub(crate) struct PlatformConfig<'a> {
+    pub(crate) dynamic_platform: OidAndBool<'a>,
+    pub(crate) cached_keys: OidAndBool<'a>,
+    pub(crate) smt_enabled: OidAndBool<'a>,
 }
 
 #[derive(Debug, PartialEq, DerSequence)]
-struct ConfigSequence<'a> {
-    id: Oid<'a>,
-    configs: PlatformConfig<'a>,
+pub(crate) struct ConfigSequence<'a> {
+    pub(crate) id: Oid<'a>,
+    pub(crate) configs: PlatformConfig<'a>,
 }
 
 #[derive(Debug, PartialEq, DerSequence)]
-struct Tcbs<'a> {
-    comp1: OidAndInt<'a>,
-    comp2: OidAndInt<'a>,
-    comp3: OidAndInt<'a>,
-    comp4: OidAndInt<'a>,
-    comp5: OidAndInt<'a>,
-    comp6: OidAndInt<'a>,
-    comp7: OidAndInt<'a>,
-    comp8: OidAndInt<'a>,
-    comp9: OidAndInt<'a>,
-    comp10: OidAndInt<'a>,
-    comp11: OidAndInt<'a>,
-    comp12: OidAndInt<'a>,
-    comp13: OidAndInt<'a>,
-    comp14: OidAndInt<'a>,
-    comp15: OidAndInt<'a>,
-    comp16: OidAndInt<'a>,
-    pcesvn: OidAndInt16<'a>,
-    cpusvn: OidAndString<'a>,
+pub(crate) struct Tcbs<'a> {
+    pub(crate) comp1: OidAndInt<'a>,
+    pub(crate) comp2: OidAndInt<'a>,
+    pub(crate) comp3: OidAndInt<'a>,
+    pub(crate) comp4: OidAndInt<'a>,
+    pub(crate) comp5: OidAndInt<'a>,
+    pub(crate) comp6: OidAndInt<'a>,
+    pub(crate) comp7: OidAndInt<'a>,
+    pub(crate) comp8: OidAndInt<'a>,
+    pub(crate) comp9: OidAndInt<'a>,
+    pub(crate) comp10: OidAndInt<'a>,
+    pub(crate) comp11: OidAndInt<'a>,
+    pub(crate) comp12: OidAndInt<'a>,
+    pub(crate) comp13: OidAndInt<'a>,
+    pub(crate) comp14: OidAndInt<'a>,
+    pub(crate) comp15: OidAndInt<'a>,
+    pub(crate) comp16: OidAndInt<'a>,
+    pub(crate) pcesvn: OidAndInt16<'a>,
+    pub(crate) cpusvn: OidAndString<'a>,
 }
 
 #[derive(Debug, PartialEq, DerSequence)]
-struct TcbSequence<'a> {
-    id: Oid<'a>,
-    tcbs: Tcbs<'a>,
+pub(crate) struct TcbSequence<'a> {
+    pub(crate) id: Oid<'a>,
+    pub(crate) tcbs: Tcbs<'a>,
 }
 
 #[derive(Debug, PartialEq, DerSequence)]
-struct SgxExtension<'a> {
-    ppid: OidAndString<'a>,
-    tcb: TcbSequence<'a>,
-    pceid: OidAndString<'a>,
-    fmspc: OidAndString<'a>,
-    sgxtype: OidAndEnum<'a>,
-    platform_instance: OidAndString<'a>,
-    configuration: ConfigSequence<'a>,
+pub(crate) struct SgxExtension<'a> {
+    pub(crate) ppid: OidAndString<'a>,
+    pub(crate) tcb: TcbSequence<'a>,
+    pub(crate) pceid: OidAndString<'a>,
+    pub(crate) fmspc: OidAndString<'a>,
+    pub(crate) sgxtype: OidAndEnum<'a>,
+    pub(crate) platform_instance: OidAndString<'a>,
+    pub(crate) configuration: ConfigSequence<'a>,
+}
+
+/// Parse the DER-encoded SGX extensions value from a PCK certificate extension.
+/// The caller is responsible for extracting the raw extension bytes (OID 1.2.840.113741.1.13.1).
+pub(crate) fn parse_sgx_extensions(value: &[u8]) -> Result<SgxExtension<'_>> {
+    SgxExtension::from_der(value)
+        .map(|(_, ext)| ext)
+        .map_err(|e| anyhow::anyhow!("Failed to parse SGX extension DER: {e}"))
 }
 
 /// Parse all PEM-encoded certificates from a PCK certificate chain.
