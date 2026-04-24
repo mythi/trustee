@@ -330,6 +330,7 @@ macro_rules! body_field {
 }
 
 impl Quote {
+    body_field!(tcb_svn);
     body_field!(report_data);
     body_field!(mr_config_id);
     body_field!(rtmr_0);
@@ -522,13 +523,18 @@ mod tests {
     use rstest::rstest;
 
     use super::*;
+    use crate::intel_dcap::collateral_service::IntelPcs;
     use crate::intel_dcap::ecdsa_quote_verification;
+    use super::super::verify::dcap_verify;
     use std::fs;
-
     #[rstest]
+    #[tokio::test]
     #[case("./test_data/tdx_quote_4.dat")]
+    #[tokio::test]
     #[case("./test_data/tdx_quote_5.dat")]
-    fn test_parse_tdx_quote(#[case] quote_path: &str) {
+    #[tokio::test]
+    #[case("./test_data/tdx_quote_6.dat")]
+    async fn test_parse_tdx_quote(#[case] quote_path: &str) {
         let quote_bin = fs::read(quote_path).unwrap();
         let quote = parse_tdx_quote(&quote_bin);
 
@@ -536,6 +542,13 @@ mod tests {
         let parsed_quote = format!("{}", quote.unwrap());
 
         let _ = fs::write(format!("{quote_path}.txt"), parsed_quote);
+
+        let url = reqwest::Url::parse("https://api.trustedservices.intel.com/").expect("parse");
+        let pcs = IntelPcs::new(url, 4);
+
+        let utc_now = chrono::Utc::now();
+        let res = dcap_verify(&quote_bin, &utc_now, &pcs).await;
+        println!("{res:?}");
     }
 
     /// Test to verify the TDX quote, both in v4 and v5 format.
