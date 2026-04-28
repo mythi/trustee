@@ -114,47 +114,38 @@ fn get_tcb_status(
     pck_cpu_pcesvn: u16,
     td_svns: Option<&[u8]>,
 ) -> bool {
-    // Compare all of the SGX TCB Comp SVNs retrieved from the SGX PCK Certificate
-    // (from 01 to 16) with the corresponding values of SVNs in sgxtcbcomponents
-    // array of TCB Level. If all SGX TCB Comp SVNs in the certificate are greater
-    // or equal to the corresponding values in TCB Level, compare PCESVN value
-    // retrieved from the SGX PCK certificate is greater or equal to the corresponding
-    // value in the TCB Level. If both are true, move on. Otherwise, return false.
-    if ref_tcb
-        .tcb
-        .sgxtcbcomponents
-        .as_ref()
-        .map(|r| r.0.iter().map(|c| c.svn).collect::<Vec<u8>>())
-        .map(|ref_cpu_svns| {
-            pck_cpu_svns.len() == ref_cpu_svns.len()
-                && pck_cpu_svns >= ref_cpu_svns.as_slice()
-                && pck_cpu_pcesvn >= ref_tcb.tcb.pcesvn.unwrap_or(u16::MAX)
-        })
-        .is_none_or(|t| !t)
-    {
-        // return false if None or TCB check failed
+    // Step 3.a: All SGX TCB Comp SVNs from the PCK certificate must be >= corresponding
+    // values in sgxtcbcomponents of the TCB Level (element-wise, not lexicographic).
+    let sgx_ok = ref_tcb.tcb.sgxtcbcomponents.as_ref().is_some_and(|r| {
+        pck_cpu_svns.len() == r.0.len()
+            && pck_cpu_svns
+                .iter()
+                .zip(r.0.iter())
+                .all(|(cert, reference)| cert >= &reference.svn)
+    });
+    if !sgx_ok {
         return false;
     }
 
-    // Return true if no TEE TCB SVN was provided (case SGX) or
-    // when the TEE TCB SVN comparison with tdxtcbcomponents was successful
-    td_svns
-        .and_then(|tds| {
-            // from index 0 to 15 if TEE TCB SVN at index 1 is set to 0,
-            // or from index 2 to 15 otherwise
-            let idx = if tds[1] == 0 { 0 } else { 2 };
+    // Step 3.b: PCESVN from PCK certificate must be >= the value in TCB Level.
+    if pck_cpu_pcesvn < ref_tcb.tcb.pcesvn.unwrap_or(0) {
+        return false;
+    }
 
-            ref_tcb
-                .tcb
-                .tdxtcbcomponents
-                .as_ref()
-                .map(|r| r.0.iter().map(|c| c.svn).collect::<Vec<u8>>())
-                .map(|ref_td_svns| {
-                    tds[idx..].len() == ref_td_svns[idx..].len() && tds[idx..] >= ref_td_svns[idx..]
-                })
-                .or(Some(false))
-        })
-        .is_none_or(|t| t)
+    // Step 3.c (TDX only): TEE TCB SVNs from the TD Report must be >= corresponding
+    // values in tdxtcbcomponents of the TCB Level (element-wise).
+    // Use indices 0..15 when TEE TCB SVN[1] == 0, or 2..15 otherwise.
+    let Some(tds) = td_svns else {
+        return true; // SGX: no TEE TCB SVN to check
+    };
+
+    ref_tcb.tcb.tdxtcbcomponents.as_ref().is_some_and(|r| {
+        let idx = if tds[1] == 0 { 0 } else { 2 };
+        tds[idx..]
+            .iter()
+            .zip(r.0[idx..].iter())
+            .all(|(td, reference)| td >= &reference.svn)
+    })
 }
 
 fn cert_has_common_name(cert: &X509, cn: &str) -> bool {
@@ -605,4 +596,94 @@ pub async fn dcap_verify(
 
     // = End TCB Status Checks =
     Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::intel_dcap::collateral_service::{Tcb, TcbComponent, TcbComponentList, TcbLevel, TcbStatus};
+    use chrono::Utc;
+    use rstest::rstest;
+
+    fn make_tcb_components(svns: &[u8; 16]) -> TcbComponentList {
+        TcbComponentList(std::array::from_fn(|i| TcbComponent {
+            svn: svns[i],
+            category: None,
+            r#type: None,
+        }))
+    }
+
+    fn make_tcb_level(
+        sgx_svns: Option<[u8; 16]>,
+        pcesvn: Option<u16>,
+        tdx_svns: Option<[u8; 16]>,
+    ) -> TcbLevel {
+        TcbLevel {
+            tcb: Tcb {
+                sgxtcbcomponents: sgx_svns.map(|s| make_tcb_components(&s)),
+                pcesvn,
+                tdxtcbcomponents: tdx_svns.map(|s| make_tcb_components(&s)),
+                isvsvn: None,
+            },
+            tcb_date: Utc::now(),
+            tcb_status: TcbStatus::UpToDate,
+            advisoryIDs: None,
+        }
+    }
+
+    // Helper to build SGX-only cert SVNs: all `val` except optionally one override at `idx`
+    fn sgx_cert(val: u8, idx: Option<(usize, u8)>) -> [u8; 16] {
+        let mut svns = [val; 16];
+        if let Some((i, v)) = idx {
+            svns[i] = v;
+        }
+        svns
+    }
+
+    // Helper to build TEE TCB SVNs: all `val`, with td_svns[1] = tee_svn1
+    fn td_cert(val: u8, tee_svn1: u8, idx: Option<(usize, u8)>) -> [u8; 16] {
+        let mut svns = [val; 16];
+        svns[1] = tee_svn1;
+        if let Some((i, v)) = idx {
+            svns[i] = v;
+        }
+        svns
+    }
+
+    #[rstest]
+    // SGX SVN checks
+    #[case("equal", sgx_cert(4, None), 0, None,  Some([4u8; 16]), Some(0), None,  true)]
+    #[case("higher", sgx_cert(5, None), 0, None, Some([4u8; 16]), Some(0), None,  true)]
+    #[case("one lower", sgx_cert(4, Some((7, 3))), 0, None, Some([4u8; 16]), Some(0), None, false)]
+    // Lexicographic trap: [5,0,...] > [4,255,...] lexicographically, fails element-wise
+    #[case("lexico trap", sgx_cert(0, Some((0, 5))), 0, None, Some({let mut r=[0u8;16]; r[0]=4; r[1]=255; r}), Some(0), None, false)]
+    // PCESVN checks
+    #[case("pcesvn equal", sgx_cert(4, None), 10, None, Some([4u8; 16]), Some(10), None, true)]
+    #[case("pcesvn too low", sgx_cert(4, None), 9, None, Some([4u8; 16]), Some(10), None, false)]
+    // No sgxtcbcomponents in reference
+    #[case("no sgx comps", [0u8; 16], 0, None, None, Some(0), None, false)]
+    // TDX: tee_svn1 != 0 → skip indices 0 and 1, compare 2..15
+    #[case("tdx equal", sgx_cert(4, None), 0, Some([3u8; 16]), Some([4u8; 16]), Some(0), Some([3u8; 16]), true)]
+    #[case("tdx one lower", sgx_cert(4, None), 0, Some({let mut s=[3u8;16]; s[5]=2; s}), Some([4u8; 16]), Some(0), Some([3u8; 16]), false)]
+    // TDX: tee_svn1 == 0, compare all 16 indices including 0 and 1
+    #[case("tdx skip 0-1", sgx_cert(4, None), 0, Some(td_cert(3, 1, None)), Some([4u8; 16]), Some(0), Some({let mut r=[3u8;16]; r[0]=255; r[1]=255; r}), true)]
+    // TDX: missing tdxtcbcomponents in reference
+    #[case("tdx no comps", sgx_cert(4, None), 0, Some(td_cert(3, 0, None)), Some([4u8; 16]), Some(0), None, false)]
+    fn test_get_tcb_status(
+        #[case] _desc: &str,
+        #[case] cert_svns: [u8; 16],
+        #[case] cert_pcesvn: u16,
+        #[case] td_svns: Option<[u8; 16]>,
+        #[case] ref_sgx: Option<[u8; 16]>,
+        #[case] ref_pcesvn: Option<u16>,
+        #[case] ref_tdx: Option<[u8; 16]>,
+        #[case] expected: bool,
+    ) {
+        let lvl = make_tcb_level(ref_sgx, ref_pcesvn, ref_tdx);
+        assert_eq!(
+            get_tcb_status(&lvl, &cert_svns, cert_pcesvn, td_svns.as_ref().map(|s| s.as_slice())),
+            expected,
+            "case: {_desc}"
+        );
+    }
 }
