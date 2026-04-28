@@ -1,11 +1,12 @@
 use crate::intel_dcap::claims::prepare_custom_claims_map;
+use crate::intel_dcap::collateral_service::PlatformCollaterals;
 use crate::intel_dcap::error::describe_error;
 use crate::TeeEvidenceParsedClaim;
 use anyhow::{anyhow, bail};
 use intel_tee_quote_verification_rs::{
     quote3_error_t, sgx_ql_qv_result_t, sgx_ql_qv_supplemental_t, sgx_ql_request_policy_t,
     sgx_qv_set_enclave_load_policy, tee_get_supplemental_data_version_and_size,
-    tee_qv_get_collateral, tee_supp_data_descriptor_t, tee_verify_quote,
+    tee_qv_get_collateral, tee_supp_data_descriptor_t, tee_verify_quote, QuoteCollateral,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -13,8 +14,10 @@ use std::env;
 use std::fs::File;
 use std::io::{ErrorKind, Write};
 use std::mem;
+use std::os::raw::c_char;
 use std::time::{Duration, SystemTime};
 use tracing::{debug, warn};
+use urlencoding;
 
 mod claims;
 pub(crate) mod collateral_service;
@@ -79,6 +82,87 @@ pub fn set_qcnl_config(c: Option<QcnlConfig>) -> Result<(), std::io::Error> {
         .inspect(|_| debug!("DCAP QCNL configuration was written to $QCNL_CONF_PATH."))
 }
 
+/// Proof-of-concept: build a [`QuoteCollateral`] from a pre-fetched
+/// `platform_collaterals.json` file for a hardcoded TDX FMSPC.
+///
+/// This replaces `tee_qv_get_collateral()` for offline/cached use cases.
+///
+/// Uses version 3.1 collateral format: CRLs are raw binary DER (with null terminator).
+/// All size fields in sgx_ql_qve_collateral_t include the terminating null byte.
+fn collateral_from_platform_collaterals() -> anyhow::Result<QuoteCollateral> {
+    const FMSPC: [u8; 6] = [0x50, 0x80, 0x6f, 0x00, 0x00, 0x00];
+    const TDX_TEE_TYPE: u32 = 0x0000_0081;
+
+    let data = std::fs::read_to_string("test_data/platform_collaterals.json")
+        .map_err(|e| anyhow!("Failed to read platform_collaterals.json: {e}"))?;
+    let pc = PlatformCollaterals::from_json_str(&data)
+        .map_err(|e| anyhow!("Failed to parse platform_collaterals.json: {e}"))?;
+    let col = pc.collaterals;
+
+    let entry = col
+        .tcbinfos
+        .iter()
+        .find(|e| e.fmspc == FMSPC)
+        .ok_or_else(|| anyhow!("fmspc {:02x?} not found in platform_collaterals.json", FMSPC))?;
+
+    let tdx_tcbinfo = entry
+        .tdx_tcbinfo
+        .as_ref()
+        .ok_or_else(|| anyhow!("no tdx_tcbinfo for fmspc {:02x?}", FMSPC))?;
+
+    // All fields in sgx_ql_qve_collateral_t include a null terminator in the size.
+    fn to_cvec_null(mut bytes: Vec<u8>) -> Vec<c_char> {
+        bytes.push(0);
+        bytes.into_iter().map(|b| b as c_char).collect()
+    }
+
+    fn url_decode_null(s: &str) -> anyhow::Result<Vec<c_char>> {
+        let bytes = urlencoding::decode(s)
+            .map(|s| s.into_owned().into_bytes())
+            .map_err(|e| anyhow!("URL decode failed: {e}"))?;
+        Ok(to_cvec_null(bytes))
+    }
+
+    // Version 3.1: CRLs are raw binary DER with null terminator.
+    fn der_hex_to_raw_null(hex_str: &str) -> anyhow::Result<Vec<c_char>> {
+        let der = hex::decode(hex_str).map_err(|e| anyhow!("hex decode failed: {e}"))?;
+        Ok(to_cvec_null(der))
+    }
+
+    // The PCK CRL issuer chain is keyed by CA type; prefer PLATFORM, fall back to PROCESSOR.
+    let pck_chain_raw = col
+        .certificates
+        .pck_crl_issuer_chain
+        .get("PLATFORM")
+        .or_else(|| col.certificates.pck_crl_issuer_chain.get("PROCESSOR"))
+        .ok_or_else(|| anyhow!("no PCK CRL issuer chain in certificates"))?;
+
+    // For TDX with PLATFORM CA type, use platformCrl; fall back to processorCrl.
+    let pck_crl_hex = col
+        .pckcacrl
+        .platform_crl
+        .as_deref()
+        .unwrap_or(&col.pckcacrl.processor_crl);
+
+    Ok(QuoteCollateral {
+        major_version: 3,
+        minor_version: 1,
+        tee_type: TDX_TEE_TYPE,
+        tcb_info: to_cvec_null(
+            serde_json::to_vec(tdx_tcbinfo)
+                .map_err(|e| anyhow!("Failed to serialize tdx_tcbinfo: {e}"))?,
+        ),
+        tcb_info_issuer_chain: url_decode_null(&col.certificates.tcb_info_issuer_chain)?,
+        qe_identity: to_cvec_null(col.tdqeidentity.into_bytes()),
+        qe_identity_issuer_chain: url_decode_null(
+            &col.certificates.enclave_identity_issuer_chain,
+        )?,
+        pck_crl: der_hex_to_raw_null(pck_crl_hex)?,
+        pck_crl_issuer_chain: url_decode_null(pck_chain_raw)?,
+        root_ca_crl: der_hex_to_raw_null(&col.rootcacrl)?,
+    })
+}
+
 pub async fn ecdsa_quote_verification(quote: &[u8]) -> anyhow::Result<Map<String, Value>> {
     let mut supp_data: sgx_ql_qv_supplemental_t = Default::default();
     let mut supp_data_desc = tee_supp_data_descriptor_t {
@@ -125,15 +209,20 @@ pub async fn ecdsa_quote_verification(quote: &[u8]) -> anyhow::Result<Map<String
         ),
     }
 
-    // get collateral
-    let collateral = match tee_qv_get_collateral(quote) {
-        Ok(c) => {
-            debug!("tee_qv_get_collateral successfully returned.");
-            Some(c)
-        }
+    let collateral = match collateral_from_platform_collaterals() {
+        Ok(c) => Some(c),
         Err(e) => {
-            warn!("tee_qv_get_collateral failed: {}", describe_error(e));
-            None
+            warn!("collateral_from_platform_collaterals failed: {e}, falling back to tee_qv_get_collateral");
+            match tee_qv_get_collateral(quote) {
+                Ok(c) => {
+                    debug!("tee_qv_get_collateral successfully returned.");
+                    Some(c)
+                }
+                Err(e) => {
+                    warn!("tee_qv_get_collateral failed: {}", describe_error(e));
+                    None
+                }
+            }
         }
     };
 

@@ -523,7 +523,7 @@ mod tests {
     use rstest::rstest;
 
     use super::*;
-    use crate::intel_dcap::collateral_service::IntelPcs;
+    use crate::intel_dcap::pcs::Pcs;
     use crate::intel_dcap::ecdsa_quote_verification;
     use super::super::verify::dcap_verify;
     use std::fs;
@@ -544,7 +544,7 @@ mod tests {
         let _ = fs::write(format!("{quote_path}.txt"), parsed_quote);
 
         let url = reqwest::Url::parse("https://api.trustedservices.intel.com/").expect("parse");
-        let pcs = IntelPcs::new(url, 4);
+        let pcs = Pcs::new(url, 4);
 
         let utc_now = chrono::Utc::now();
         let res = dcap_verify(&quote_bin, &utc_now, &pcs).await;
@@ -574,11 +574,10 @@ mod tests {
     /// platforms.
     #[cfg(target_arch = "x86_64")]
     #[rstest]
-    #[ignore]
     #[tokio::test]
     #[case(
         "./test_data/tdx_quote_4.dat",
-        r#"{"advisory_ids":["INTEL-SA-00837","INTEL-SA-00960","INTEL-SA-00982","INTEL-SA-00986","INTEL-SA-01010","INTEL-SA-01036","INTEL-SA-01076","INTEL-SA-01079","INTEL-SA-01099","INTEL-SA-01103","INTEL-SA-01111"],"collateral_expiration_status":"0","earliest_expiration_date":"2026-01-06T15:39:51Z","earliest_issue_date":"2018-05-21T10:45:10Z","is_cached_keys":true,"is_dynamic_platform":true,"is_smt_enabled":true,"latest_issue_date":"2025-12-07T15:45:03Z","pck_crl_num":1,"platform_provider_id":"df4c32a9d8d86009aaf380ec43cfcefb","root_ca_crl_num":1,"root_key_id":"46e403bd34f05a3f2817ab9badcaacc7ffc98e0f261008cd30dae936cace18d5dcf58eef31463613de1570d516200993","sgx_type":"Scalable","tcb_date":"2023-02-15T00:00:00Z","tcb_eval_num":1,"tcb_status":"OutOfDate"}"#
+        r#"{"advisory_ids":["INTEL-SA-00837","INTEL-SA-00960","INTEL-SA-00982","INTEL-SA-00986","INTEL-SA-01010","INTEL-SA-01036","INTEL-SA-01076","INTEL-SA-01079","INTEL-SA-01099","INTEL-SA-01103","INTEL-SA-01111"],"collateral_expiration_status":"0","earliest_expiration_date":"2026-05-28T08:01:06Z","earliest_issue_date":"2018-05-21T10:45:10Z","is_cached_keys":true,"is_dynamic_platform":true,"is_smt_enabled":true,"latest_issue_date":"2026-04-28T08:03:27Z","pck_crl_num":1,"platform_provider_id":"df4c32a9d8d86009aaf380ec43cfcefb","root_ca_crl_num":1,"root_key_id":"46e403bd34f05a3f2817ab9badcaacc7ffc98e0f261008cd30dae936cace18d5dcf58eef31463613de1570d516200993","sgx_type":"Scalable","tcb_date":"2023-02-15T00:00:00Z","tcb_eval_num":18,"tcb_status":"OutOfDate"}"#
     )]
     #[ignore]
     #[tokio::test]
