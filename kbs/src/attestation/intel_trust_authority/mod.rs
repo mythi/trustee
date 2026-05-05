@@ -104,6 +104,29 @@ struct NvDeviceReportAndCert {
     arch: String,
 }
 
+/// ITA multi-GPU request body (evidence_list).
+#[derive(Serialize, Debug)]
+struct NvGpuMultiRequest {
+    gpu_nonce: String,
+    arch: String,
+    evidence_list: Vec<NvGpuEvidenceItem>,
+}
+
+#[derive(Serialize, Debug)]
+struct NvGpuEvidenceItem {
+    evidence: String,
+    certificate: String,
+}
+
+/// ITA Nvidia GPU attestation request: single-GPU or multi-GPU.
+/// Determined by the number of devices in `device_evidence_list`.
+#[derive(Serialize, Debug)]
+#[serde(untagged)]
+enum NvGpuRequest {
+    Single(NvDeviceReportAndCert),
+    Multi(NvGpuMultiRequest),
+}
+
 #[derive(Serialize, Debug)]
 struct AttestReqData {
     policy_ids: Vec<String>,
@@ -113,7 +136,7 @@ struct AttestReqData {
     #[serde(skip_serializing_if = "Option::is_none")]
     sgx: Option<DcapTeeEvidence>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    nvgpu: Option<NvDeviceReportAndCert>,
+    nvgpu: Option<NvGpuRequest>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -225,14 +248,53 @@ fn build_attest_request(
                     continue;
                 }
 
-                // only one GPU supported at the moment
-                let mut nvgpu = evidence.device_evidence_list[0].clone();
+                // Filter out unsupported archs (e.g. LS10 NVSwitch) — ITA only accepts
+                // HOPPER and BLACKWELL GPUs.
+                let mut devices: Vec<_> = evidence
+                    .device_evidence_list
+                    .into_iter()
+                    .filter(|d| {
+                        let ok = d.arch == "HOPPER" || d.arch == "BLACKWELL";
+                        if !ok {
+                            warn!(
+                                "ITA: unsupported Nvidia device arch {:?}, skipping it",
+                                d.arch
+                            );
+                        }
+                        ok
+                    })
+                    .collect();
 
+                if devices.is_empty() {
+                    warn!(
+                        "ITA: no supported Nvidia GPU devices after filtering, dropping evidence"
+                    );
+                    continue;
+                }
+
+                let arch = devices[0].arch.clone();
                 let runtime_data_hash =
                     Sha512::digest(independent_evidence.runtime_data.to_string()).to_vec();
-                nvgpu.gpu_nonce = hex::encode(&runtime_data_hash[0..32]);
+                let gpu_nonce = hex::encode(&runtime_data_hash[0..32]);
 
-                req_data.nvgpu = Some(nvgpu);
+                req_data.nvgpu = Some(if devices.len() == 1 {
+                    NvGpuRequest::Single(NvDeviceReportAndCert {
+                        gpu_nonce,
+                        ..devices.remove(0)
+                    })
+                } else {
+                    NvGpuRequest::Multi(NvGpuMultiRequest {
+                        gpu_nonce,
+                        arch,
+                        evidence_list: devices
+                            .into_iter()
+                            .map(|d| NvGpuEvidenceItem {
+                                evidence: d.evidence,
+                                certificate: d.certificate,
+                            })
+                            .collect(),
+                    })
+                });
             }
             _ => {
                 bail!(
