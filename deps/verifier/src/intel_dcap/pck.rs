@@ -3,6 +3,8 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 
+#![allow(dead_code)]
+
 //! Parsing of Intel SGX extensions from PCK (Provisioning Certification Key)
 //! certificates. The extensions are DER-encoded under OID 1.2.840.113741.1.13.1
 //! and are present in both TDX and SGX PCK certificate chains.
@@ -284,18 +286,15 @@ pub(crate) fn parse_platform_info(pem_certs: &[u8]) -> Result<PlatformInfo> {
 #[cfg(test)]
 mod tests {
     use super::parse_platform_info;
-    use crate::tdx::quote::{parse_tdx_quote, parse_tdx_quote_certification};
+    use crate::tdx::quote::parse_tdx_quote;
 
     #[test]
     fn parse_platform_info_platform_ca() {
         let quote_bin = std::fs::read("./test_data/tdx_quote_4.dat").expect("read quote failed");
         let quote = parse_tdx_quote(&quote_bin).expect("parse quote");
-        let certs = parse_tdx_quote_certification(&quote_bin, &quote)
-            .expect("parse cert chain")
-            .qe_certification_data
-            .certificates;
 
-        let info = parse_platform_info(&certs).expect("parse platform info");
+        let info = parse_platform_info(&quote.cert_data().qe_certification_data.certificates)
+            .expect("parse platform info");
 
         assert!(info.is_platform_ca);
         assert_eq!(

@@ -7,12 +7,15 @@
 //! serialize them into a JSON. The format will look like example available in test data:
 //! ./test_data/parse_tdx_claims_expected.json
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use bitflags::{bitflags, Flags};
 use serde_json::{Map, Value};
 
-use super::quote::Quote;
-use crate::{intel_dcap::pck::PlatformInfo, tdx::quote::QuoteV5Body, TeeEvidenceParsedClaim};
+use crate::intel_dcap::quote::Quote;
+use crate::{
+    intel_dcap::{pck::PlatformInfo, quote::QuoteV5Body},
+    TeeEvidenceParsedClaim,
+};
 use eventlog::CcEventLog;
 
 macro_rules! parse_claim {
@@ -28,7 +31,7 @@ macro_rules! parse_claim {
 }
 
 pub fn generate_parsed_claim(
-    quote: Quote,
+    quote: &Quote,
     cc_eventlog: Option<CcEventLog>,
     platform_info: &PlatformInfo,
 ) -> Result<TeeEvidenceParsedClaim> {
@@ -37,7 +40,8 @@ pub fn generate_parsed_claim(
     let mut quote_header = Map::new();
 
     match &quote {
-        Quote::V4 { header, body } => {
+        Quote::V3 { .. } => bail!("expected TDX quote (v4/v5), got SGX quote (v3)"),
+        Quote::V4 { header, body, .. } => {
             parse_claim!(quote_header, "version", b"\x04\x00");
             parse_claim!(quote_header, "att_key_type", header.att_key_type);
             parse_claim!(quote_header, "tee_type", header.tee_type);
@@ -68,6 +72,7 @@ pub fn generate_parsed_claim(
             r#type,
             size,
             body,
+            ..
         } => {
             parse_claim!(quote_header, "version", b"\x05\x00");
             parse_claim!(quote_header, "att_key_type", header.att_key_type);
@@ -253,10 +258,7 @@ mod tests {
     use serde_json::Value;
 
     use crate::intel_dcap::pck::parse_platform_info;
-    use crate::tdx::{
-        claims::PlatformConfigInfoError,
-        quote::{parse_tdx_quote, parse_tdx_quote_certification},
-    };
+    use crate::tdx::{claims::PlatformConfigInfoError, quote::parse_tdx_quote};
 
     use super::{generate_parsed_claim, TdShimPlatformConfigInfo};
 
@@ -269,13 +271,11 @@ mod tests {
         let ccel_bin = std::fs::read("./test_data/CCEL_data").expect("read ccel failed");
         let quote = parse_tdx_quote(&quote_bin).expect("parse quote");
         let ccel = CcEventLog::try_from(ccel_bin).expect("parse ccel");
-        let pck_certs = parse_tdx_quote_certification(&quote_bin, &quote)
-            .expect("parse cert data")
-            .qe_certification_data
-            .certificates;
-        let platform_info = parse_platform_info(&pck_certs).expect("parse platform info");
+        let platform_info =
+            parse_platform_info(&quote.cert_data().qe_certification_data.certificates)
+                .expect("parse platform info");
         let claims =
-            generate_parsed_claim(quote, Some(ccel), &platform_info).expect("parse claim failed");
+            generate_parsed_claim(&quote, Some(ccel), &platform_info).expect("parse claim failed");
         let expected_json_str =
             std::fs::read_to_string("./test_data/parse_tdx_claims_expected.json")
                 .expect("read expected json output failed");
