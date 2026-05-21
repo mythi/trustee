@@ -3,8 +3,6 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 
-#![allow(dead_code)]
-
 //! Parsing of Intel SGX extensions from PCK (Provisioning Certification Key)
 //! certificates. The extensions are DER-encoded under OID 1.2.840.113741.1.13.1
 //! and are present in both TDX and SGX PCK certificate chains.
