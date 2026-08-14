@@ -44,6 +44,16 @@ pub mod nvidia;
 #[cfg(any(feature = "tdx-verifier", feature = "sgx-verifier"))]
 pub(crate) mod intel_dcap;
 
+/// Re-exports of internal DCAP verification entry points for Criterion benchmarks.
+///
+/// Gated on the `bench` feature to avoid widening the public API in normal builds.
+#[cfg(feature = "bench")]
+pub mod bench_support {
+    pub use crate::intel_dcap::collateral::build_quote_collateral;
+    pub use crate::intel_dcap::verify::dcap_verify;
+    pub use crate::intel_dcap::{ecdsa_quote_verification, quote_collateral_params, QcnlConfig};
+}
+
 #[cfg(feature = "tpm-verifier")]
 pub mod tpm;
 

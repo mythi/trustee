@@ -41,7 +41,7 @@ pub(crate) enum TcbUpdateType {
 }
 
 #[derive(Debug, Deserialize, Clone, Serialize, PartialEq)]
-pub(crate) struct QcnlConfig {
+pub struct QcnlConfig {
     collateral_service: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     use_secure_cert: Option<bool>,
@@ -64,12 +64,12 @@ impl QcnlConfig {
     ///
     /// A `file://` URL selects the offline file backend; any other URL selects
     /// the PCS/PCCS HTTPS backend.
-    pub(crate) fn pcs(&self) -> Result<pcs::Pcs, pcs::PcsError> {
+    pub fn pcs(&self) -> Result<pcs::Pcs, pcs::PcsError> {
         pcs::Pcs::new(self)
     }
 }
 
-pub(crate) fn ecdsa_quote_verification(
+pub fn ecdsa_quote_verification(
     quote: &[u8],
     collateral: Option<intel_tee_quote_verification_rs::QuoteCollateral>,
 ) -> anyhow::Result<Map<String, Value>> {
@@ -170,6 +170,23 @@ pub(crate) fn ecdsa_quote_verification(
             );
         }
     }
+}
+
+/// Parses a raw DCAP quote and returns the `(fmspc, is_platform_ca, tee_type)` triple
+/// needed to fetch verification collateral for it.
+///
+/// Exists only to give the `bench` feature's benchmarks a single, minimal entry
+/// point instead of widening visibility on `quote::Quote` and its internals.
+#[cfg(feature = "bench")]
+pub fn quote_collateral_params(quote_bin: &[u8]) -> anyhow::Result<([u8; 6], bool, [u8; 4])> {
+    let quote = quote::parse_quote(quote_bin)?;
+    let platform_info =
+        pck::parse_platform_info(quote.cert_data().qe_certification_data.certificates)?;
+    Ok((
+        platform_info.fmspc,
+        platform_info.is_platform_ca,
+        quote.tee_type(),
+    ))
 }
 
 pub(crate) fn extend_using_custom_claims(
