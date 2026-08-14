@@ -6,6 +6,7 @@ rust-version.workspace = true
 
 [features]
 default = ["all-verifier"]
+bench = ["tdx-verifier"]
 all-verifier = [
     "tdx-verifier",
     "sgx-verifier",
@@ -140,6 +141,7 @@ nv-attestation-sdk = { git = "https://github.com/NVIDIA/attestation-sdk", tag = 
 
 [dev-dependencies]
 assert-json-diff.workspace = true
+criterion = "0.5"
 openssl.workspace = true
 rstest.workspace = true
 serial_test.workspace = true
@@ -147,3 +149,8 @@ tempfile.workspace = true
 tokio.workspace = true
 tracing-subscriber.workspace = true
 wiremock = "0.6"
+
+[[bench]]
+name = "dcap_verify_compare"
+harness = false
+required-features = ["bench"]

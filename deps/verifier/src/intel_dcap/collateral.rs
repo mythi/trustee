@@ -62,7 +62,7 @@ fn root_ca_crl_distpoint(cert_chain_pem: &[u8]) -> Result<String> {
 ///
 /// The Root CA CRL distribution point URL is read from the Root CA certificate,
 /// which is the last certificate in the QE Identity issuer chain.
-pub(crate) async fn build_quote_collateral(
+pub async fn build_quote_collateral(
     fmspc: [u8; 6],
     is_platform_ca: bool,
     tee_type: [u8; 4],
