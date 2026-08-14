@@ -110,6 +110,8 @@ pub(crate) struct PlatformInfo {
     pub fmspc: [u8; 6],
     /// PCE (Provisioning Certification Enclave) identifier.
     pub pceid: [u8; 2],
+    /// Platform Provisioning ID.
+    pub ppid: [u8; 16],
     /// 16 SGX TCB SVN components.
     pub tcb_components: [u8; 16],
     /// PCE security version number.
@@ -205,6 +207,7 @@ pub(crate) fn parse_platform_info(pem_certs: &[u8]) -> Result<PlatformInfo> {
 
     let fmspc: [u8; 6] = sgx.fmspc.s.try_into().context("fmspc is not 6 bytes")?;
     let pceid: [u8; 2] = sgx.pceid.s.try_into().context("pceid is not 2 bytes")?;
+    let ppid: [u8; 16] = sgx.ppid.s.try_into().context("ppid is not 16 bytes")?;
 
     let tcb_components = [
         tcb.comp1.val,
@@ -269,6 +272,7 @@ pub(crate) fn parse_platform_info(pem_certs: &[u8]) -> Result<PlatformInfo> {
     Ok(PlatformInfo {
         fmspc,
         pceid,
+        ppid,
         tcb_components,
         pcesvn: tcb.pcesvn.val,
         cpusvn,
