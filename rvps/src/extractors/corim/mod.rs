@@ -12,13 +12,15 @@ use anyhow::{Context, Result};
 use base64::Engine;
 use corim_rs::{
     ConciseMidTag, ConciseTagTypeChoice, Corim, ExtensionValue, MeasuredElementTypeChoice,
-    RawValueTypeChoice,
+    ProfileTypeChoice, RawValueTypeChoice,
 };
 use tracing::debug;
 
 use crate::ReferenceValue;
 
 use super::Extractor;
+
+mod profiles;
 
 #[derive(Default)]
 pub struct CorimExtractor;
@@ -121,6 +123,21 @@ fn extract_rvs_from_comid(comid: &ConciseMidTag) -> Result<Vec<ReferenceValue>> 
     Ok(rvs)
 }
 
+/// Normalizes a CoRIM's declared `profile` field (a URI or OID) to a plain
+/// string for matching against `profiles::CorimProfileExtractor::profiles`.
+fn profile_identifier(profile: &Option<ProfileTypeChoice>) -> Option<String> {
+    match profile.as_ref()? {
+        ProfileTypeChoice::Uri(uri) => Some(uri.to_string()),
+        ProfileTypeChoice::Oid(oid) => Some(oid.to_string()),
+        // Some profiles (e.g. Intel POE) declare their profile identifier
+        // as a bare CBOR text string rather than a tag-32-wrapped URI, per
+        // their own CDDL. corim_rs has no dedicated variant for that, so
+        // it lands here as an untagged extension value instead.
+        ProfileTypeChoice::Extension(ExtensionValue::Text(text)) => Some(text.to_string()),
+        ProfileTypeChoice::Extension(_) => None,
+    }
+}
+
 // Some CoRIMs are wrapped with ASN Header tags..
 // If we find CBOR tags 500 or 502 at the start of the CoRIM,
 // remove them.
@@ -149,6 +166,41 @@ fn strip_outer_tags(data: &[u8]) -> &[u8] {
     slice
 }
 
+/// If `data` is a raw COSE `Sig_Structure` -- a 4-element array
+/// `["Signature1", protected, external_aad, payload]` (RFC 9052 SS4.4),
+/// exactly what `poe-gen-tool derive-tbs`/`prepare` write as the
+/// to-be-signed bytes -- return just the payload (the unsigned CoRIM,
+/// tag 501) rather than the whole signing input.
+///
+/// This extractor doesn't verify CoRIM signatures (see below), so there's
+/// no reason to require a caller to finish signing at all: they can hand
+/// RVPS the same to-be-signed bytes they'd otherwise send to a signer,
+/// and skip completing that step entirely. Any other input -- including
+/// an already fully signed CoRIM (COSE_Sign1, tag 18) -- passes through
+/// unchanged; `Corim::from_cbor` already handles that shape natively for
+/// any spec-conformant profile.
+fn unwrap_sig_structure_payload(data: &[u8]) -> Result<std::borrow::Cow<'_, [u8]>> {
+    let Ok(ciborium::Value::Array(items)) = ciborium::from_reader::<ciborium::Value, _>(data)
+    else {
+        return Ok(std::borrow::Cow::Borrowed(data));
+    };
+
+    let [context, _protected, _external_aad, payload] = items.as_slice() else {
+        return Ok(std::borrow::Cow::Borrowed(data));
+    };
+
+    if context.as_text() != Some("Signature1") {
+        return Ok(std::borrow::Cow::Borrowed(data));
+    }
+
+    let payload_bytes = payload
+        .as_bytes()
+        .context("Sig_Structure payload is not a byte string")?
+        .clone();
+
+    Ok(std::borrow::Cow::Owned(payload_bytes))
+}
+
 impl Extractor for CorimExtractor {
     /// Extract reference values from CoRIMs.
     /// Note that this does not yet check the signature of signed CoRIMs.
@@ -158,9 +210,11 @@ impl Extractor for CorimExtractor {
             .context("Failed to decode CoRIM as base64")?;
 
         let cbor_bytes = strip_outer_tags(&cbor_bytes);
+        let cbor_bytes = unwrap_sig_structure_payload(cbor_bytes)?;
 
-        let corim = Corim::from_cbor(cbor_bytes)?;
+        let corim = Corim::from_cbor(cbor_bytes.as_ref())?;
         let corim_map = corim.as_map_ref();
+        let profile_id = profile_identifier(&corim_map.profile);
 
         let mut rvs: Vec<ReferenceValue> = vec![];
 
@@ -168,11 +222,17 @@ impl Extractor for CorimExtractor {
             match tag {
                 ConciseTagTypeChoice::Mid(comid) => {
                     rvs.extend(extract_rvs_from_comid(comid.as_ref())?);
+                    if let Some(profile_id) = &profile_id {
+                        rvs.extend(profiles::extract_for_profile(profile_id, comid.as_ref())?);
+                    }
                 }
                 ConciseTagTypeChoice::Extension(ExtensionValue::Bytes(bytes)) => {
                     // Manually parse as CoMID
                     if let Ok(comid) = ciborium::from_reader::<ConciseMidTag, _>(bytes.as_ref()) {
                         rvs.extend(extract_rvs_from_comid(&comid)?);
+                        if let Some(profile_id) = &profile_id {
+                            rvs.extend(profiles::extract_for_profile(profile_id, &comid)?);
+                        }
                     }
                 }
                 _ => {
