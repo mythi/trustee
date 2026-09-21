@@ -12,6 +12,35 @@
 //! Both mval fields are POE profile-private extension keys, so they land
 //! in `MeasurementValuesMap::extensions` rather than any of corim_rs's
 //! named mval fields.
+//!
+//! ## Input: the to-be-signed CBOR, not the signed CoRIM
+//!
+//! This extractor never verifies CoRIM signatures (see the parent
+//! module), so there is no benefit to requiring a fully signed POE
+//! artifact. Instead it accepts the same to-be-signed bytes a caller
+//! would otherwise send to a signer -- `poe-gen-tool derive-tbs`/
+//! `prepare`'s `poe.tbs.cbor` output, a raw COSE `Sig_Structure`
+//! (RFC 9052 SS4.4: `["Signature1", protected, external_aad, payload]`).
+//! `unwrap_sig_structure_payload` (in the parent module) pulls the
+//! unsigned CoRIM (tag 501) out of that, so a caller never has to
+//! complete signing at all to register a POE endorsement here. A fully
+//! signed artifact (COSE_Sign1, tag 18) works too, for any *other*
+//! spec-conformant profile -- `corim_rs`'s own `SignedCorim` already
+//! handles that path natively.
+//!
+//! ## Known CDDL deviation from the base CoRIM spec
+//!
+//! POE's own schema describes itself as "a narrowing of
+//! draft-ietf-rats-corim-10," but its profile identifier's encoding is a
+//! deviation, not a narrowing: the base spec's `$profile-type-choice`
+//! socket only has two plugs, `uri` (`#6.32(tstr)`) and `tagged-oid-type`
+//! (`#6.111(bytes)`) -- both CBOR-tagged. POE's CDDL types its own
+//! profile identifier as a bare `tstr`, with no tag, so real POE CoRIMs
+//! don't parse as that socket against a strictly spec-conformant
+//! implementation. `corim_rs` is not at fault here; it correctly
+//! implements the base spec. Worked around in the parent module's
+//! `profile_identifier`, in the
+//! `ProfileTypeChoice::Extension(ExtensionValue::Text(_))` arm.
 
 use anyhow::Result;
 use corim_rs::{ClassIdTypeChoice, ConciseMidTag, ExtensionValue, Integer};

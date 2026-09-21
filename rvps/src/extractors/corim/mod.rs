@@ -131,8 +131,10 @@ fn profile_identifier(profile: &Option<ProfileTypeChoice>) -> Option<String> {
         ProfileTypeChoice::Oid(oid) => Some(oid.to_string()),
         // Some profiles (e.g. Intel POE) declare their profile identifier
         // as a bare CBOR text string rather than a tag-32-wrapped URI, per
-        // their own CDDL. corim_rs has no dedicated variant for that, so
-        // it lands here as an untagged extension value instead.
+        // their own CDDL -- a real deviation from the base spec, not a
+        // corim_rs gap; see profiles/intel_poe.rs's module doc. corim_rs
+        // has no dedicated variant for an untagged profile, so it lands
+        // here as an untagged extension value instead.
         ProfileTypeChoice::Extension(ExtensionValue::Text(text)) => Some(text.to_string()),
         ProfileTypeChoice::Extension(_) => None,
     }
