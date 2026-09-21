@@ -270,4 +270,69 @@ mod tests {
             rvs[2].value[0] == "a3a5e715f0cc574a73c3f9bebb6bc24f32ffd5b67b387244c2c909da779a1478"
         );
     }
+
+    /// `poe-example-tbs.cbor` is the real to-be-signed CBOR (a COSE
+    /// `Sig_Structure`) for an Intel POE (Platform Ownership Endorsement)
+    /// CoRIM, generated with Intel's `poe-gen-tool prepare` against the
+    /// same TDX quote used by the verifier's own test fixtures
+    /// (`tdx_quote_4.dat`), binding owner name "ACME-DC1" to that quote's
+    /// PCK cert platform_instance_id. The expected RV name/value below
+    /// were confirmed against `poe-gen-tool print`'s own decoding of the
+    /// signed CoRIM produced from the same inputs.
+    #[test]
+    fn extract_poe_corim() {
+        tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::DEBUG)
+            .with_test_writer()
+            .try_init()
+            .ok();
+
+        let cbor_bytes = include_bytes!("poe-example-tbs.cbor");
+
+        let b64 = base64::engine::general_purpose::STANDARD.encode(cbor_bytes);
+        let extractor = CorimExtractor;
+        let rvs = extractor.verify_and_extract(&b64).unwrap();
+
+        assert_eq!(rvs.len(), 1);
+        assert_eq!(
+            rvs[0].name,
+            "intel_poe/owner_name/021ac64d355ba904e2d5948d228d5482"
+        );
+        assert_eq!(rvs[0].value, "ACME-DC1");
+    }
+
+    /// Profile dispatch is gated on the CoRIM's own declared profile, not
+    /// just the triple shape: the same conditional-endorsement triple from
+    /// `poe-example-tbs.cbor` must produce nothing under a profile the
+    /// Intel POE extractor doesn't claim, even though the triple itself is
+    /// unchanged.
+    #[test]
+    fn poe_extractor_ignores_other_profiles() {
+        use super::{profile_identifier, unwrap_sig_structure_payload};
+        use corim_rs::{ConciseTagTypeChoice, Corim};
+
+        let cbor_bytes = include_bytes!("poe-example-tbs.cbor");
+        let cbor_bytes = unwrap_sig_structure_payload(cbor_bytes).unwrap();
+        let corim = Corim::from_cbor(cbor_bytes.as_ref()).unwrap();
+        let corim_map = corim.as_map_ref();
+
+        let profile_id = profile_identifier(&corim_map.profile).unwrap();
+        assert_eq!(profile_id, "tag:intel.com,2026:tee.poe#1.0");
+
+        let comid = corim_map
+            .tags
+            .iter()
+            .find_map(|tag| match tag {
+                ConciseTagTypeChoice::Mid(comid) => Some(comid.as_ref()),
+                _ => None,
+            })
+            .expect("fixture has a CoMID tag");
+
+        let rvs = super::profiles::extract_for_profile(&profile_id, comid).unwrap();
+        assert_eq!(rvs.len(), 1);
+
+        let rvs = super::profiles::extract_for_profile("some-other-vendor-profile", comid)
+            .unwrap();
+        assert!(rvs.is_empty());
+    }
 }

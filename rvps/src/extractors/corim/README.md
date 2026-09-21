@@ -37,3 +37,28 @@ For example, an RV URI might look like:
 
 * `ACME/RoadRunner/31fb5abf-023e-4992-aa4e-95f9c1503bfa/digests`
 * `ACME/RoadRunner/31fb5abf-023e-4992-aa4e-95f9c1503bfa/raw_bytes`
+
+## Intel Platform Ownership Endorsement (POE)
+
+Intel's POE profile (`tag:intel.com,2026:tee.poe#1.0`, produced by
+`poe-gen-tool`) doesn't use reference-triples at all. It binds a Platform
+Instance ID (PIID) to an owner name via a conditional-endorsement triple: a
+signed statement of the form "if the platform's PIID is X, its owner is Y".
+This extractor recognizes that shape separately and produces one RV per
+triple, named:
+
+* `intel_poe/owner_name/<piid-hex>`
+
+where `<piid-hex>` is the lowercase hex encoding of the PIID in its raw,
+as-extracted byte order (matching Intel's own tooling, not a
+byte-reversed/GUID-formatted form). The value is the owner name string.
+
+Since this extractor doesn't verify CoRIM signatures (see below), it
+accepts the to-be-signed CBOR directly, rather than requiring a fully
+signed artifact: `poe-gen-tool derive-tbs`/`prepare`'s `poe.tbs.cbor`
+output, a raw COSE `Sig_Structure`. There's no need to complete signing
+just to register a POE endorsement here.
+
+Note that, like the rest of this extractor, CoRIM signatures are not
+verified before extraction -- for POE, or for any other profile that
+submits a fully signed artifact instead.

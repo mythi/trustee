@@ -27,6 +27,8 @@ use corim_rs::ConciseMidTag;
 
 use crate::ReferenceValue;
 
+mod intel_poe;
+
 /// Extracts reference values from a CoMID whose containing CoRIM declared
 /// support for one of `profiles()`.
 pub(super) trait CorimProfileExtractor: Send + Sync {
@@ -41,7 +43,7 @@ pub(super) trait CorimProfileExtractor: Send + Sync {
 /// vendor profile means adding a module here and one entry to this list --
 /// no changes to the shared CoRIM dispatch logic in the parent module.
 fn registered_extractors() -> Vec<Box<dyn CorimProfileExtractor>> {
-    vec![]
+    vec![Box::new(intel_poe::IntelPoeExtractor)]
 }
 
 /// Runs every registered extractor that declares support for `profile_id`

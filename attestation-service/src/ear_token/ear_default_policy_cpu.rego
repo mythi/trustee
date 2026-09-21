@@ -210,6 +210,15 @@ hardware := 2 if {
 	# attester_advisory_ids := {id | id := input.tdx.advisory_ids[_]} # convert array to set
 	# intersection := attester_advisory_ids & disallowed_advisory_ids
 	# count(intersection) == 0
+
+	# Check the platform's Intel POE (Platform Ownership Endorsement) owner.
+	# RVPS's CoRIM extractor stores POE owner names keyed by the platform's
+	# PIID, as reference values named "intel_poe/owner_name/<piid-hex>".
+	# input.tdx.platform_instance_id is only present for Platform CA-signed
+	# PCK certs, so this check only applies to those platforms.
+	# allowed_owner := "ACME-DC1"
+	# poe_rv_name := sprintf("intel_poe/owner_name/%s", [input.tdx.platform_instance_id])
+	# query_reference_value(poe_rv_name) == allowed_owner
 }
 
 configuration := 2 if {
