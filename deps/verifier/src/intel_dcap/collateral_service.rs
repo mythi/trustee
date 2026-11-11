@@ -1,5 +1,6 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use serde_json::value::RawValue;
 use std::ops::Deref;
 use strum::Display;
 
@@ -45,18 +46,32 @@ where
 
 const NUM_TCB_COMPONENTS: usize = 16;
 
+/// A signed TCB Info response.
+///
+/// `tcb_info` is the `tcbInfo` object exactly as it appears in the response:
+/// Intel signs those bytes, and re-serializing a parsed struct is not
+/// guaranteed to reproduce them (field order, whitespace, escaping, number
+/// and date formatting). Verify the signature over `tcb_info.get()`, and use
+/// [`TcbInfoJson::tcb_info`] for the parsed contents.
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct TcbInfoJson {
-    pub tcb_info: TcbInfo,
-    #[serde(with = "hex")]
-    pub signature: Vec<u8>,
+pub struct TcbInfoJson<'a> {
+    #[serde(borrow)]
+    pub tcb_info: &'a RawValue,
+    pub signature: HexBytes<64>,
+}
+
+impl<'a> TcbInfoJson<'a> {
+    /// Parses the signed `tcbInfo` object, borrowing from the response.
+    pub fn tcb_info(&self) -> serde_json::Result<TcbInfo<'a>> {
+        serde_json::from_str(self.tcb_info.get())
+    }
 }
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct TcbInfo {
-    pub id: String,
+pub struct TcbInfo<'a> {
+    pub id: &'a str,
     pub version: u8,
     pub issue_date: DateTime<Utc>,
     pub next_update: DateTime<Utc>,
@@ -66,9 +81,10 @@ pub struct TcbInfo {
     pub tcb_evaluation_data_number: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tdx_module: Option<TdxModule>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tdx_module_identities: Option<Vec<TdxModuleIdentity>>,
-    pub tcb_levels: Vec<TcbLevel>,
+    #[serde(default, borrow, skip_serializing_if = "Option::is_none")]
+    pub tdx_module_identities: Option<Vec<TdxModuleIdentity<'a>>>,
+    #[serde(borrow)]
+    pub tcb_levels: Vec<TcbLevel<'a>>,
 }
 
 #[derive(Serialize, Deserialize, Default)]
@@ -85,8 +101,8 @@ pub struct TdxModule {
 
 #[derive(Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
-pub struct TdxModuleIdentity {
-    pub id: String,
+pub struct TdxModuleIdentity<'a> {
+    pub id: &'a str,
     #[serde(
         serialize_with = "hex::serialize_upper",
         deserialize_with = "hex::deserialize"
@@ -94,7 +110,8 @@ pub struct TdxModuleIdentity {
     pub mrsigner: Vec<u8>,
     pub attributes: HexBytes<8>,
     pub attributes_mask: HexBytes<8>,
-    pub tcb_levels: Vec<TcbLevel>,
+    #[serde(borrow)]
+    pub tcb_levels: Vec<TcbLevel<'a>>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Display)]
@@ -110,16 +127,17 @@ pub enum TcbStatus {
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct TcbLevel {
+pub struct TcbLevel<'a> {
     pub tcb: Tcb,
     pub tcb_date: DateTime<Utc>,
     pub tcb_status: TcbStatus,
     #[serde(
         rename = "advisoryIDs",
         default,
+        borrow,
         skip_serializing_if = "Option::is_none"
     )]
-    pub advisory_ids: Option<Vec<String>>,
+    pub advisory_ids: Option<Vec<&'a str>>,
 }
 
 /// TCB SVN components for a single TCB level.
@@ -145,27 +163,35 @@ impl Deref for TcbComponentList {
     }
 }
 
+/// A single TCB component. Only `svn` takes part in quote verification;
+/// the informational `category` and `type` fields are skipped rather than
+/// copied out of every component of every TCB level.
 #[derive(Serialize, Deserialize, Default)]
 pub struct TcbComponent {
     pub svn: u8,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub category: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub r#type: Option<String>,
+}
+
+/// A signed QE Identity response. See [`TcbInfoJson`] for why the signed
+/// `enclaveIdentity` object is kept verbatim.
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QeIdentity<'a> {
+    #[serde(borrow)]
+    pub enclave_identity: &'a RawValue,
+    pub signature: HexBytes<64>,
+}
+
+impl<'a> QeIdentity<'a> {
+    /// Parses the signed `enclaveIdentity` object, borrowing from the response.
+    pub fn enclave_identity(&self) -> serde_json::Result<EnclaveIdentity<'a>> {
+        serde_json::from_str(self.enclave_identity.get())
+    }
 }
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct QeIdentity {
-    pub enclave_identity: EnclaveIdentity,
-    #[serde(with = "hex")]
-    pub signature: Vec<u8>,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct EnclaveIdentity {
-    pub id: String,
+pub struct EnclaveIdentity<'a> {
+    pub id: &'a str,
     pub version: u8,
     pub issue_date: DateTime<Utc>,
     pub next_update: DateTime<Utc>,
@@ -176,7 +202,8 @@ pub struct EnclaveIdentity {
     pub attributes_mask: HexBytes<16>,
     pub mrsigner: HexBytes<32>,
     pub isvprodid: u16,
-    pub tcb_levels: Vec<TcbLevel>,
+    #[serde(borrow)]
+    pub tcb_levels: Vec<TcbLevel<'a>>,
 }
 
 #[derive(Deserialize)]
@@ -189,17 +216,17 @@ pub struct PcsCollaterals {
     pub tcbinfos: Vec<TcbInfoEntry>,
     pub pckcacrl: PckCaCrl,
 
-    /// QE enclave identity.
+    /// QE enclave identity: a signed [`QeIdentity`] response, kept verbatim.
     #[serde(default)]
-    pub qeidentity: Option<QeIdentity>,
+    pub qeidentity: Option<Box<RawValue>>,
     #[serde(default)]
-    pub qeidentity_early: Option<QeIdentity>,
+    pub qeidentity_early: Option<Box<RawValue>>,
 
-    /// TD QE enclave identity.
+    /// TD QE enclave identity: a signed [`QeIdentity`] response, kept verbatim.
     #[serde(default)]
-    pub tdqeidentity: Option<QeIdentity>,
+    pub tdqeidentity: Option<Box<RawValue>>,
     #[serde(default)]
-    pub tdqeidentity_early: Option<QeIdentity>,
+    pub tdqeidentity_early: Option<Box<RawValue>>,
 
     pub certificates: PcsCollateralCertificates,
 
@@ -207,6 +234,44 @@ pub struct PcsCollaterals {
     pub rootcacrl: String,
     #[serde(default)]
     pub rootcacrl_cdp: Option<String>,
+}
+
+impl PcsCollaterals {
+    /// Checks that every cached TCB Info and QE Identity response parses,
+    /// including its signed inner object. The responses are kept verbatim
+    /// (see [`TcbInfoEntry`]), so a malformed one is rejected here, when
+    /// the collateral file is loaded, rather than at quote verification.
+    pub fn validate(&self) -> serde_json::Result<()> {
+        for raw in self
+            .tcbinfos
+            .iter()
+            .flat_map(|e| {
+                [
+                    &e.sgx_tcbinfo,
+                    &e.sgx_tcbinfo_early,
+                    &e.tdx_tcbinfo,
+                    &e.tdx_tcbinfo_early,
+                ]
+            })
+            .flatten()
+        {
+            let tcb_info: TcbInfoJson = serde_json::from_str(raw.get())?;
+            tcb_info.tcb_info()?;
+        }
+        for raw in [
+            &self.qeidentity,
+            &self.qeidentity_early,
+            &self.tdqeidentity,
+            &self.tdqeidentity_early,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            let qe_identity: QeIdentity = serde_json::from_str(raw.get())?;
+            qe_identity.enclave_identity()?;
+        }
+        Ok(())
+    }
 }
 
 /// One FMSPC entry in `collaterals.tcbinfos`.
@@ -218,15 +283,17 @@ pub struct TcbInfoEntry {
     #[serde(with = "hex")]
     pub fmspc: [u8; 6],
 
+    /// Signed [`TcbInfoJson`] responses, kept verbatim: the bytes handed out
+    /// as `CollateralData::body` must be exactly what Intel signed.
     #[serde(default)]
-    pub sgx_tcbinfo: Option<TcbInfoJson>,
+    pub sgx_tcbinfo: Option<Box<RawValue>>,
     #[serde(default)]
-    pub sgx_tcbinfo_early: Option<TcbInfoJson>,
+    pub sgx_tcbinfo_early: Option<Box<RawValue>>,
 
     #[serde(default)]
-    pub tdx_tcbinfo: Option<TcbInfoJson>,
+    pub tdx_tcbinfo: Option<Box<RawValue>>,
     #[serde(default)]
-    pub tdx_tcbinfo_early: Option<TcbInfoJson>,
+    pub tdx_tcbinfo_early: Option<Box<RawValue>>,
 }
 
 #[derive(Deserialize)]
@@ -322,7 +389,7 @@ mod tests {
         let text = std::fs::read_to_string("./test_data/tcbInfo.json").expect("read tcbInfo.json");
         let d: TcbInfoJson = serde_json::from_str(&text).expect("deserialize TcbInfoJson");
 
-        let ti = &d.tcb_info;
+        let ti = d.tcb_info().expect("parse tcbInfo");
         assert_eq!(ti.id, "TDX");
         assert_eq!(ti.version, 3);
         assert_eq!(*ti.fmspc, [0x00, 0xA0, 0x6D, 0x08, 0x00, 0x00]);
@@ -331,13 +398,13 @@ mod tests {
         let tdx_mod = ti.tdx_module.as_ref().expect("tdxModule present");
         assert_eq!(*tdx_mod.attributes_mask, [0xFF; 8]);
 
-        assert!(!d.signature.is_empty());
-
-        // Round-trip: serialized JSON must match the original.
-        let serialized = serde_json::to_value(&d).expect("serialize TcbInfoJson");
+        // The signed bytes are the original `tcbInfo` text, verbatim.
+        let signed = d.tcb_info.get();
+        assert!(text.contains(signed));
         let original: serde_json::Value =
             serde_json::from_str(&text).expect("re-parse tcbInfo.json");
-        assert_json_eq!(original, serialized);
+        let signed: serde_json::Value = serde_json::from_str(signed).expect("parse signed bytes");
+        assert_json_eq!(original["tcbInfo"], signed);
     }
 
     #[test]
@@ -346,18 +413,28 @@ mod tests {
             .expect("read enclaveIdentity.json");
         let d: QeIdentity = serde_json::from_str(&text).expect("deserialize QeIdentity");
 
-        let ei = &d.enclave_identity;
+        let ei = d.enclave_identity().expect("parse enclaveIdentity");
         assert_eq!(ei.id, "TD_QE");
         assert_eq!(ei.version, 2);
         assert_eq!(*ei.miscselect, [0x00; 4]);
         assert_eq!(*ei.miscselect_mask, [0xFF; 4]);
 
-        assert!(!d.signature.is_empty());
-
-        // Round-trip.
-        let serialized = serde_json::to_value(&d).expect("serialize QeIdentity");
+        // The signed bytes are the original `enclaveIdentity` text, verbatim.
+        let signed = d.enclave_identity.get();
+        assert!(text.contains(signed));
         let original: serde_json::Value =
             serde_json::from_str(&text).expect("re-parse enclaveIdentity.json");
-        assert_json_eq!(original, serialized);
+        let signed: serde_json::Value = serde_json::from_str(signed).expect("parse signed bytes");
+        assert_json_eq!(original["enclaveIdentity"], signed);
+    }
+
+    #[test]
+    fn escaped_strings_are_rejected() {
+        // String fields borrow from the signed JSON, so a string that would
+        // need unescaping is a parse error rather than a silent copy.
+        let text = std::fs::read_to_string("./test_data/tcbInfo.json").expect("read tcbInfo.json");
+        let text = text.replacen(r#""id":"TDX""#, r#""id":"TD\u0058""#, 1);
+        let d: TcbInfoJson = serde_json::from_str(&text).expect("deserialize TcbInfoJson");
+        assert!(d.tcb_info().is_err());
     }
 }

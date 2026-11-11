@@ -160,6 +160,7 @@ impl Pcs {
 
         let text = tokio::fs::read_to_string(path).await?;
         let pc: PlatformCollaterals = serde_json::from_str(&text)?;
+        pc.collaterals.validate()?;
         let data = Arc::new(pc.collaterals);
 
         let mut guard = FILE_CACHE.write().await;
@@ -215,7 +216,7 @@ impl Pcs {
                 })?;
 
                 Ok(CollateralData {
-                    body: serde_json::to_vec(tcb_info)?,
+                    body: tcb_info.get().as_bytes().to_vec(),
                     cert_chain: Some(url_decode_bytes(&col.certificates.tcb_info_issuer_chain)?),
                 })
             }
@@ -238,7 +239,7 @@ impl Pcs {
                 })?;
 
                 Ok(CollateralData {
-                    body: serde_json::to_vec(body)?,
+                    body: body.get().as_bytes().to_vec(),
                     cert_chain: Some(url_decode_bytes(
                         &col.certificates.enclave_identity_issuer_chain,
                     )?),
@@ -387,6 +388,81 @@ fn url_decode_bytes(s: &str) -> Result<Vec<u8>, PcsError> {
 
 #[cfg(test)]
 mod tests {
+    use super::{CollateralService, CollateralType, Pcs};
+    use crate::intel_dcap::{QcnlConfig, collateral_service::IntelTee};
+
+    /// Writes a Pcs Client Tool style collateral file embedding `tcb_info`
+    /// and `qe_identity` (both TDX, FMSPC 00A06D080000) as given, and returns
+    /// a `Pcs` reading it.
+    fn file_pcs(dir: &tempfile::TempDir, tcb_info: &str, qe_identity: &str) -> Pcs {
+        let path = dir.path().join("collaterals.json");
+        let text = format!(
+            r#"{{"collaterals": {{
+                "tcbinfos": [{{"fmspc": "00A06D080000", "tdx_tcbinfo": {tcb_info}}}],
+                "pckcacrl": {{"processorCrl": "00", "platformCrl": "00"}},
+                "tdqeidentity": {qe_identity},
+                "certificates": {{
+                    "TCB-Info-Issuer-Chain": "tcb-chain",
+                    "SGX-Enclave-Identity-Issuer-Chain": "qe-chain"
+                }},
+                "rootcacrl": "00"
+            }}}}"#
+        );
+        std::fs::write(&path, text).expect("write collateral file");
+        let url = url::Url::from_file_path(&path).expect("file URL");
+        let config: QcnlConfig =
+            serde_json::from_value(serde_json::json!({ "collateral_service": url.as_str() }))
+                .expect("deserialize QcnlConfig");
+        Pcs::new(&config).expect("Pcs::new")
+    }
+
+    /// Re-formats JSON so it is semantically equal but not byte-identical
+    /// to any serialization of the parsed structs: sorted keys, pretty-printed.
+    fn reformat(json: &str) -> String {
+        let value: serde_json::Value = serde_json::from_str(json).expect("parse JSON");
+        serde_json::to_string_pretty(&value).expect("pretty-print JSON")
+    }
+
+    #[tokio::test]
+    async fn file_backend_returns_signed_collateral_verbatim() {
+        let tcb_info = reformat(&std::fs::read_to_string("./test_data/tcbInfo.json").unwrap());
+        let qe_identity =
+            reformat(&std::fs::read_to_string("./test_data/enclaveIdentity.json").unwrap());
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pcs = file_pcs(&dir, &tcb_info, &qe_identity);
+
+        let tcb = pcs
+            .get(CollateralType::TcbInfo(
+                &IntelTee::Tdx,
+                [0x00, 0xA0, 0x6D, 0x08, 0x00, 0x00],
+            ))
+            .await
+            .expect("get TcbInfo from file");
+        assert_eq!(tcb.body, tcb_info.as_bytes());
+        assert_eq!(tcb.cert_chain.as_deref(), Some(b"tcb-chain".as_slice()));
+
+        let qe = pcs
+            .get(CollateralType::QeIdentity(&IntelTee::Tdx))
+            .await
+            .expect("get QeIdentity from file");
+        assert_eq!(qe.body, qe_identity.as_bytes());
+        assert_eq!(qe.cert_chain.as_deref(), Some(b"qe-chain".as_slice()));
+    }
+
+    #[tokio::test]
+    async fn file_backend_rejects_malformed_tcb_info_on_load() {
+        let qe_identity = std::fs::read_to_string("./test_data/enclaveIdentity.json").unwrap();
+        let dir = tempfile::tempdir().expect("tempdir");
+        // Valid JSON, but `tcbInfo` is missing every required field.
+        let pcs = file_pcs(&dir, r#"{"tcbInfo": {}, "signature": "00"}"#, &qe_identity);
+
+        let res = pcs.get(CollateralType::QeIdentity(&IntelTee::Tdx)).await;
+        assert!(
+            matches!(res, Err(super::PcsError::Json(_))),
+            "malformed TCB Info must fail the file load"
+        );
+    }
+
     #[tokio::test]
     #[ignore = "requires PCS network connectivity; run with: cargo test -p verifier --no-default-features --features tdx-verifier -- tcb_info_signature --include-ignored"]
     async fn tcb_info_signature() {
@@ -423,7 +499,6 @@ mod tests {
 
         let d: TcbInfoJson =
             serde_json::from_slice(tcb.as_slice()).expect("deserialize TcbInfoJson");
-        assert_eq!(d.signature.len(), 64);
 
         let public_key = chain[0]
             .public_key()
@@ -432,12 +507,11 @@ mod tests {
         let s = BigNum::from_slice(&d.signature[32..]).expect("signature S");
         let ecdsa_sig = EcdsaSig::from_private_components(r, s).expect("build EcdsaSig");
 
-        let bytes = serde_json::to_vec(&d.tcb_info).expect("serialize tcbInfo for verification");
         let ec_key = EcKey::try_from(public_key).expect("extract EC key");
 
         assert!(
             ecdsa_sig
-                .verify(&sha256(bytes.as_slice()), &ec_key)
+                .verify(&sha256(d.tcb_info.get().as_bytes()), &ec_key)
                 .is_ok_and(|res| res)
         );
     }
