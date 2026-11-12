@@ -524,9 +524,9 @@ fn parse_cert_data_at(
 
     let sig_data = quote_bin
         .get(sig_start..sig_start + sig_len)
-        .context(format!(
-            "quote too short for declared signature data length ({sig_len})"
-        ))?;
+        .with_context(|| {
+            format!("quote too short for declared signature data length ({sig_len})")
+        })?;
 
     parse_certification_data(sig_data, is_sgx_v3)
 }
