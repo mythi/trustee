@@ -53,7 +53,7 @@ const NUM_TCB_COMPONENTS: usize = 16;
 /// guaranteed to reproduce them (field order, whitespace, escaping, number
 /// and date formatting). Verify the signature over `tcb_info.get()`, and use
 /// [`TcbInfoJson::tcb_info`] for the parsed contents.
-#[derive(Serialize, Deserialize)]
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TcbInfoJson<'a> {
     #[serde(borrow)]
@@ -68,26 +68,30 @@ impl<'a> TcbInfoJson<'a> {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TcbInfo<'a> {
     pub id: &'a str,
     pub version: u8,
-    pub issue_date: DateTime<Utc>,
+    /// Required and type-checked, as in the DCAP QVL, but not used.
+    #[serde(rename = "issueDate")]
+    pub _issue_date: DateTime<Utc>,
     pub next_update: DateTime<Utc>,
     pub fmspc: HexBytes<6>,
     pub pce_id: HexBytes<2>,
-    pub tcb_type: u8,
+    /// Required and type-checked, as in the DCAP QVL, but not used.
+    #[serde(rename = "tcbType")]
+    pub _tcb_type: u8,
     pub tcb_evaluation_data_number: u32,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub tdx_module: Option<TdxModule>,
-    #[serde(default, borrow, skip_serializing_if = "Option::is_none")]
+    #[serde(default, borrow)]
     pub tdx_module_identities: Option<Vec<TdxModuleIdentity<'a>>>,
     #[serde(borrow)]
     pub tcb_levels: Vec<TcbLevel<'a>>,
 }
 
-#[derive(Serialize, Deserialize, Default)]
+#[derive(Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct TdxModule {
     /// SEAM module signer measurement — 48 bytes (SHA-384-sized), matching
@@ -95,22 +99,30 @@ pub struct TdxModule {
     /// [`EnclaveIdentity::mrsigner`].
     pub mrsigner: HexBytes<48>,
     pub attributes: HexBytes<8>,
-    pub attributes_mask: HexBytes<8>,
+    /// Required and type-checked, as in the DCAP QVL, but not applied: the
+    /// QVL (like `dcap_verify`) requires SEAMATTRIBUTES to be all-zero and
+    /// equal to `attributes`, with no masking.
+    #[serde(rename = "attributesMask")]
+    pub _attributes_mask: HexBytes<8>,
 }
 
-#[derive(Serialize, Deserialize, Default)]
+#[derive(Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct TdxModuleIdentity<'a> {
     pub id: &'a str,
     /// See [`TdxModule::mrsigner`].
     pub mrsigner: HexBytes<48>,
     pub attributes: HexBytes<8>,
-    pub attributes_mask: HexBytes<8>,
+    /// Required and type-checked, as in the DCAP QVL, but not applied: the
+    /// QVL (like `dcap_verify`) requires SEAMATTRIBUTES to be all-zero and
+    /// equal to `attributes`, with no masking.
+    #[serde(rename = "attributesMask")]
+    pub _attributes_mask: HexBytes<8>,
     #[serde(borrow)]
     pub tcb_levels: Vec<TcbLevel<'a>>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Display)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Display)]
 pub enum TcbStatus {
     UpToDate,
     SWHardeningNeeded,
@@ -130,35 +142,30 @@ pub enum TcbStatus {
     TdRelaunchAdvisedConfigurationNeeded,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TcbLevel<'a> {
     pub tcb: Tcb,
     pub tcb_date: DateTime<Utc>,
     pub tcb_status: TcbStatus,
-    #[serde(
-        rename = "advisoryIDs",
-        default,
-        borrow,
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(rename = "advisoryIDs", default, borrow)]
     pub advisory_ids: Option<Vec<&'a str>>,
 }
 
 /// TCB SVN components for a single TCB level.
-#[derive(Serialize, Deserialize)]
+#[derive(Deserialize)]
 pub struct Tcb {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub sgxtcbcomponents: Option<TcbComponentList>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub pcesvn: Option<u16>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub tdxtcbcomponents: Option<TcbComponentList>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub isvsvn: Option<u8>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Deserialize)]
 pub struct TcbComponentList(pub [TcbComponent; NUM_TCB_COMPONENTS]);
 
 impl Deref for TcbComponentList {
@@ -171,14 +178,14 @@ impl Deref for TcbComponentList {
 /// A single TCB component. Only `svn` takes part in quote verification;
 /// the informational `category` and `type` fields are skipped rather than
 /// copied out of every component of every TCB level.
-#[derive(Serialize, Deserialize, Default)]
+#[derive(Deserialize, Default)]
 pub struct TcbComponent {
     pub svn: u8,
 }
 
 /// A signed QE Identity response. See [`TcbInfoJson`] for why the signed
 /// `enclaveIdentity` object is kept verbatim.
-#[derive(Serialize, Deserialize)]
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QeIdentity<'a> {
     #[serde(borrow)]
@@ -193,12 +200,14 @@ impl<'a> QeIdentity<'a> {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EnclaveIdentity<'a> {
     pub id: &'a str,
     pub version: u8,
-    pub issue_date: DateTime<Utc>,
+    /// Required and type-checked, as in the DCAP QVL, but not used.
+    #[serde(rename = "issueDate")]
+    pub _issue_date: DateTime<Utc>,
     pub next_update: DateTime<Utc>,
     pub tcb_evaluation_data_number: u32,
     pub miscselect: HexBytes<4>,
@@ -401,7 +410,7 @@ mod tests {
         assert_eq!(*ti.pce_id, [0x00, 0x00]);
 
         let tdx_mod = ti.tdx_module.as_ref().expect("tdxModule present");
-        assert_eq!(*tdx_mod.attributes_mask, [0xFF; 8]);
+        assert_eq!(*tdx_mod.attributes, [0x00; 8]);
 
         // The signed bytes are the original `tcbInfo` text, verbatim.
         let signed = d.tcb_info.get();
